@@ -6,6 +6,7 @@ import time
 import torch
 import platform
 from flask import Flask, Response
+import serial
 
 app = Flask(__name__)
 
@@ -215,6 +216,18 @@ def gen_frames(ears_norm, mars_norm, pucs_norm, moes_norm):
             frame_before_run = 0
             label = get_classification(input_data)
 
+        frame_before_run += 1
+        if frame_before_run >= 15 and len(input_data) == 20:
+            frame_before_run = 0
+            label = get_classification(input_data)
+
+            # --- KODE BARU: KIRIM SINYAL KE ARDUINO ---
+            if arduino is not None:
+                if label == 1: 
+                    arduino.write(b'1') # Kirim sinyal ngantuk
+                else:          
+                    arduino.write(b'0') # Kirim sinyal alert (bangun)
+
         # Gambar teks indikator
         cv2.putText(image, "EAR: %.2f" % (ear_main), (int(0.02 * image.shape[1]), int(0.07 * image.shape[0])),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
@@ -256,6 +269,16 @@ drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 model_lstm_path = r'models\clf_lstm_jit6.pth'
 model = torch.jit.load(model_lstm_path)
 model.eval()
+
+# --- INISIALISASI KONEKSI ARDUINO VIA USB ---
+try:
+    # '/dev/ttyACM0' adalah port default Arduino di Raspi. 
+    # Bisa juga '/dev/ttyUSB0'. Sesuaikan jika berbeda!
+    arduino = serial.Serial('COM8', 9600, timeout=1)
+    print("\n[INFO] Berhasil terhubung ke Arduino via USB.")
+except Exception as e:
+    arduino = None
+    print(f"\n[WARNING] Arduino tidak terdeteksi. Error: {e}")
 
 # Global norm variable untuk menampung hasil kalibrasi
 ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None
