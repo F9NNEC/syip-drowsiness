@@ -2,11 +2,9 @@ import cv2
 import numpy as np
 import time
 
-
-
 # Inisialisasi kamera
-cap0 = cv2.VideoCapture(0)
-cap1 = cv2.VideoCapture(1)
+cap0 = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap1 = cv2.VideoCapture(1, cv2.CAP_DSHOW)
 
 # Set resolusi langsung dari hardware kamera (4:3)
 for cap in [cap0, cap1]:
