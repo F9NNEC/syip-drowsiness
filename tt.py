@@ -5,17 +5,12 @@ import numpy as np
 import time
 import torch
 import platform
-import threading
 from flask import Flask, Response
 import serial
 
 app = Flask(__name__)
 
-# --- PENGATURAN BACKEND KAMERA TEPAT SASARAN ---
-if platform.system() == 'Windows':
-    backend = cv2.CAP_DSHOW  # Lebih cepat untuk Windows & kamera eksternal
-else:
-    backend = cv2.CAP_V4L2   # Lebih cepat untuk Linux / Raspberry Pi
+backend = cv2.CAP_V4L2
 
 def distance(p1, p2):
     return (((p1[:2] - p2[:2]) ** 2).sum()) ** 0.5
@@ -113,11 +108,8 @@ def calibrate(calib_frame_count=75):
 
     print('\n[INFO] Menjalankan Kalibrasi... Pastikan wajah ada di depan kamera.')
     
-    # PERBAIKAN: Gunakan backend DSHOW/V4L2 dan kurangi buffer
     cap = cv2.VideoCapture(0, backend)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     
     while cap.isOpened():
         success, image = cap.read()
@@ -162,17 +154,8 @@ def get_classification(input_data):
     # PERBAIKAN: Ubah menjadi >= 4 (Mayoritas dari 6 chunk)
     return int(preds.sum() >= 4)
 
-
-# --- BACKGROUND CAPTURE: kamera & deteksi hanya jalan SEKALI di sini ---
-# latest_frame menyimpan frame JPEG terakhir yang sudah diproses,
-# supaya semua device (banyak viewer) tinggal "membaca" frame yang sama
-# tanpa masing-masing membuka kamera / memanggil face_mesh sendiri-sendiri.
-latest_frame = None
-frame_lock = threading.Lock()
-
-def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
-    global latest_frame
-
+def gen_frames(ears_norm, mars_norm, pucs_norm, moes_norm):
+    """ Generator fungsi untuk mengirim stream MJPEG ke Flask """
     ear_main = 0
     mar_main = 0
     puc_main = 0
@@ -183,13 +166,9 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
     input_data = []
     frame_before_run = 0
 
-    # PERBAIKAN: Gunakan backend DSHOW/V4L2 dan kurangi buffer
     cap = cv2.VideoCapture(0, backend)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     
-    # --- TAMBAHKAN EPSILON DI SINI (SEBELUM LOOP) ---
     epsilon = 1e-5 
     
     while cap.isOpened():
@@ -197,7 +176,6 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
         if not success:
             continue
 
-        # --- POTONGAN KODE BARU DI SINI ---
         ear, mar, puc, moe, image = run_face_mp(image)
         if ear != -1000:
             ear = (ear - ears_norm[0]) / (ears_norm[1] + epsilon)
@@ -230,17 +208,19 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
             frame_before_run = 0
             label = get_classification(input_data)
 
+
         frame_before_run += 1
         if frame_before_run >= 15 and len(input_data) == 20:
             frame_before_run = 0
             label = get_classification(input_data)
 
-            # --- KODE BARU: KIRIM SINYAL KE ARDUINO ---
+            # arduino
             if arduino is not None:
                 if label == 1: 
-                    arduino.write(b'1') # Kirim sinyal ngantuk
+                    arduino.write(b'1') # ngantuk
                 else:          
-                    arduino.write(b'0') # Kirim sinyal alert (bangun)
+                    arduino.write(b'0')
+
 
         # Gambar teks indikator
         cv2.putText(image, "EAR: %.2f" % (ear_main), (int(0.02 * image.shape[1]), int(0.07 * image.shape[0])),
@@ -261,29 +241,12 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
         ret, buffer = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         if not ret:
             continue
-
-        # Simpan sebagai frame terbaru (dibaca oleh semua viewer/device)
-        with frame_lock:
-            latest_frame = buffer.tobytes()
+            
+        frame_bytes = buffer.tobytes()
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
     cap.release()
-
-
-def gen_frames_stream():
-    """ Setiap device yang buka /video_feed menjalankan generator ini,
-        tapi hanya MEMBACA latest_frame -- tidak membuka kamera sendiri. """
-    while True:
-        with frame_lock:
-            frame = latest_frame
-
-        if frame is None:
-            time.sleep(0.05)
-            continue
-
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        time.sleep(0.03)  # batasi ~30fps per viewer, cegah CPU spinning
-
 
 # --- INISIALISASI VARIABEL GLOBAL ---
 right_eye = [[33, 133], [160, 144], [159, 145], [158, 153]]
@@ -292,25 +255,17 @@ mouth = [[61, 291], [39, 181], [0, 17], [269, 405]]
 states = ['alert', 'drowsy']
 
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    max_num_faces=1,
-    refine_landmarks=False,
-    min_detection_confidence=0.3,
-    min_tracking_confidence=0.8
-)
+face_mesh = mp_face_mesh.FaceMesh(min_detection_confidence=0.3, min_tracking_confidence=0.8)
 mp_drawing = mp.solutions.drawing_utils
 drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 
-# Pastikan path ini benar di PC kamu
-model_lstm_path = r'models\clf_lstm_jit6.pth'
+model_lstm_path = r'models/clf_lstm_jit6.pth'
 model = torch.jit.load(model_lstm_path)
 model.eval()
 
 # --- INISIALISASI KONEKSI ARDUINO VIA USB ---
 try:
-    # '/dev/ttyACM0' adalah port default Arduino di Raspi. 
-    # Bisa juga '/dev/ttyUSB0'. Sesuaikan jika berbeda!
-    arduino = serial.Serial('COM8', 9600, timeout=1)
+    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
     print("\n[INFO] Berhasil terhubung ke Arduino via USB.")
 except Exception as e:
     arduino = None
@@ -326,32 +281,20 @@ def index():
     return """
     <html>
       <body style="margin:0; background:#111; color:white; font-family:Arial; text-align:center;">
-        <h2 style="margin-top:20px;">Drowsiness Detection Stream</h2>
         <img id="video" src="/video_feed" style="width:100%; max-width:800px; border:2px solid #444;">
       </body>
-    </body>
     </html>
     """
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(gen_frames_stream(),
+    return Response(gen_frames(ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
     # Eksekusi kalibrasi terlebih dahulu sebelum server web menyala
     ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = calibrate()
-
-    # Jalankan kamera + deteksi SEKALI di background thread.
-    # Semua device yang buka dashboard (banyak viewer sekaligus) hanya
-    # membaca latest_frame lewat gen_frames_stream(), bukan membuka kamera baru.
-    capture_thread = threading.Thread(
-        target=capture_loop,
-        args=(ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g),
-        daemon=True
-    )
-    capture_thread.start()
-
+    
     print('[INFO] Memulai server Flask. Buka http://127.0.0.1:5000 di browser.')
     try:
         app.run(host='0.0.0.0', port=5000, threaded=True)
