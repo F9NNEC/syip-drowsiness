@@ -6,10 +6,34 @@ import time
 import torch
 import platform
 import threading
-from flask import Flask, Response
+import os
+from functools import wraps
+from datetime import timedelta
+from flask import Flask, Response, request, redirect, url_for, session
+from werkzeug.security import generate_password_hash, check_password_hash
+from dotenv import load_dotenv
 import serial
 
 app = Flask(__name__)
+
+load_dotenv()
+
+app.secret_key = os.environ.get('DASHBOARD_SECRET_KEY', 'ardiganteng123')
+app.permanent_session_lifetime = timedelta(days=7)  # login bertahan 7 hari, tidak perlu login ulang tiap buka
+
+DASHBOARD_USERNAME = os.environ.get('DASHBOARD_USERNAME', 'ardi')
+DASHBOARD_PASSWORD_HASH = generate_password_hash(
+    os.environ.get('DASHBOARD_PASSWORD', 'gantengg')
+)
+
+def login_required(f):
+    """ Decorator: route yang dipasangi ini wajib login dulu sebelum bisa diakses. """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated
 
 # --- PENGATURAN BACKEND KAMERA TEPAT SASARAN ---
 if platform.system() == 'Windows':
@@ -321,7 +345,131 @@ ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None
 
 
 # --- FLASK ROUTES ---
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+
+        if username == DASHBOARD_USERNAME and check_password_hash(DASHBOARD_PASSWORD_HASH, password):
+            session.permanent = True
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            error = 'Username atau password salah.'
+
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Login - Monitoring Pengendara</title>
+        <style>
+            html, body {
+                margin: 0;
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                background-color: #f2f2f5;
+                font-family: system-ui, -apple-system, sans-serif;
+            }
+            .login-card {
+                background: #ffffff;
+                width: 100%;
+                max-width: 340px;
+                padding: 32px 28px;
+                border-radius: 20px;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.06);
+                box-sizing: border-box;
+            }
+            .login-card h1 {
+                font-size: 22px;
+                margin: 0 0 6px 0;
+                color: #111;
+            }
+            .login-card p {
+                font-size: 13px;
+                color: #888;
+                margin: 0 0 24px 0;
+            }
+            .field {
+                margin-bottom: 16px;
+            }
+            .field label {
+                display: block;
+                font-size: 13px;
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 6px;
+            }
+            .field input {
+                width: 100%;
+                padding: 12px 14px;
+                border-radius: 12px;
+                border: 1px solid #e5e5e5;
+                font-size: 14px;
+                box-sizing: border-box;
+            }
+            .field input:focus {
+                outline: none;
+                border-color: #111;
+            }
+            .submit-btn {
+                width: 100%;
+                padding: 13px;
+                border-radius: 12px;
+                border: none;
+                background-color: #111;
+                color: #fff;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                margin-top: 8px;
+            }
+            .submit-btn:hover {
+                background-color: #333;
+            }
+            .error-msg {
+                background-color: #fdecec;
+                color: #c0392b;
+                font-size: 13px;
+                padding: 10px 12px;
+                border-radius: 10px;
+                margin-bottom: 16px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-card">
+            <h1>Monitoring Pengendara</h1>
+            <p>Masuk untuk melihat dashboard</p>
+            """ + (f'<div class="error-msg">{error}</div>' if error else '') + """
+            <form method="POST">
+                <div class="field">
+                    <label>Username</label>
+                    <input type="text" name="username" autocomplete="username" required autofocus>
+                </div>
+                <div class="field">
+                    <label>Password</label>
+                    <input type="password" name="password" autocomplete="current-password" required>
+                </div>
+                <button class="submit-btn" type="submit">Masuk</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def index():
     return """
     <!DOCTYPE html>
@@ -515,12 +663,12 @@ def index():
             
             <div class="header">
                 <h1 class="header-title">Monitoring<br>Pengendara</h1>
-                <div class="profile-btn">
+                <a href="/logout" class="profile-btn" title="Logout" style="text-decoration:none;">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                         <circle cx="12" cy="7" r="4"></circle>
                     </svg>
-                </div>
+                </a>
             </div>
 
             <div class="dashcam-section">
@@ -588,6 +736,7 @@ def index():
     """
 
 @app.route('/video_feed')
+@login_required
 def video_feed():
     return Response(gen_frames_stream(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
