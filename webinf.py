@@ -324,11 +324,265 @@ ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None
 @app.route('/')
 def index():
     return """
-    <html>
-      <body style="margin:0; background:#111; color:white; font-family:Arial; text-align:center;">
-        <h2 style="margin-top:20px;">Drowsiness Detection Stream</h2>
-        <img id="video" src="/video_feed" style="width:100%; max-width:800px; border:2px solid #444;">
-      </body>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Monitoring Pengendara</title>
+        <style>
+            /* Reset dan styling dasar */
+            html, body {
+                margin: 0;
+                background-color: #ffffff;
+                font-family: system-ui, -apple-system, sans-serif;
+                min-height: 100vh;
+                overflow-x: hidden;
+            }
+
+            /* Wrapper untuk menampung container yang akan di-scale via JS */
+            .scale-wrapper {
+                width: 100%;
+                display: flex;
+                justify-content: center;
+            }
+
+            /* Kontainer utama: ukuran desain SELALU 390px (baku).
+               Di desktop, tampil apa adanya (scale 1) sebagai kartu terpusat.
+               Di HP, di-scale proporsional oleh JS supaya tampilan identik
+               di semua ukuran layar -- bukan reflow ulang. */
+            .mobile-container {
+                background-color: #ffffff;
+                width: 390px;
+                box-sizing: border-box;
+                padding: 24px;
+                transform-origin: top center;
+            }
+
+            /* Header */
+            .header {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                margin-bottom: 30px;
+            }
+            .header-title {
+                font-size: 26px;
+                font-weight: 700;
+                color: #000;
+                line-height: 1.2;
+                margin: 0;
+            }
+            .profile-btn {
+                background-color: #f8f9fa;
+                width: 44px;
+                height: 44px;
+                border-radius: 50%;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                flex-shrink: 0;
+            }
+
+            /* Dashcam Section */
+            .dashcam-section {
+                position: relative;
+                margin-bottom: 24px;
+                margin-top: 20px;
+            }
+            .badge-center {
+                position: absolute;
+                top: -14px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: white;
+                padding: 4px 16px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                color: #333;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                z-index: 10;
+            }
+            .video-container {
+                width: 100%;
+                aspect-ratio: 16 / 9; /* sesuai resolusi asli kamera: 640x360 */
+                border-radius: 20px;
+                background-color: #f0f0f0;
+                overflow: hidden;
+            }
+            .video-container img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover; /* aman, rasio kotak == rasio kamera, jadi tidak memotong */
+            }
+
+            /* Heart Rate Section */
+            .heart-card {
+                border: 1px solid #f0f0f0;
+                border-radius: 20px;
+                padding: 20px;
+                margin-bottom: 24px;
+                display: flex;
+                align-items: center;
+                position: relative;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+            }
+            .heart-info {
+                display: flex;
+                flex-direction: column;
+                min-width: 80px;
+            }
+            .heart-label {
+                font-size: 14px;
+                font-weight: 600;
+                color: #000;
+                margin-bottom: 5px;
+            }
+            .heart-value-container {
+                display: flex;
+                flex-direction: column;
+            }
+            .heart-value {
+                font-size: 42px;
+                font-weight: 700;
+                color: #111;
+                line-height: 1;
+            }
+            .heart-unit {
+                font-size: 12px;
+                color: #777;
+                margin-top: 4px;
+            }
+            .heart-graph {
+                flex-grow: 1;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 0 10px;
+            }
+            .view-graph-btn {
+                position: absolute;
+                top: 15px;
+                right: 15px;
+                border: 1px solid #eee;
+                border-radius: 10px;
+                padding: 6px 8px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                background: white;
+            }
+            .view-graph-btn span {
+                font-size: 9px;
+                font-weight: 600;
+                color: #333;
+                margin-top: 2px;
+            }
+
+            /* Location Section */
+            .location-section {
+                position: relative;
+                width: 100%;
+                height: 200px;
+                border-radius: 20px;
+                overflow: hidden;
+                background-color: #eee;
+            }
+            .badge-left {
+                position: absolute;
+                top: 15px;
+                left: 15px;
+                background: white;
+                padding: 6px 16px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                color: #333;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                z-index: 10;
+            }
+            .location-section img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="scale-wrapper">
+        <div class="mobile-container">
+            
+            <div class="header">
+                <h1 class="header-title">Monitoring<br>Pengendara</h1>
+                <div class="profile-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="12" cy="7" r="4"></circle>
+                    </svg>
+                </div>
+            </div>
+
+            <div class="dashcam-section">
+                <div class="badge-center">Dashcam</div>
+                <div class="video-container">
+                    <img id="video" src="/video_feed" alt="Video Feed">
+                </div>
+            </div>
+
+            <div class="heart-card">
+                <div class="heart-info">
+                    <div class="heart-label">Heart</div>
+                    <div class="heart-value-container">
+                        <span class="heart-value">72</span>
+                        <span class="heart-unit">bpm</span>
+                    </div>
+                </div>
+                
+                <div class="heart-graph">
+                    <svg width="120" height="50" viewBox="0 0 120 50" stroke="#d94b4b" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="0,25 30,25 40,10 50,45 60,15 70,30 80,25 120,25" />
+                    </svg>
+                </div>
+
+                <div class="view-graph-btn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="#333">
+                        <path d="M5 9h4v11H5zm6-6h4v17h-4zm6 10h4v7h-4z"/>
+                    </svg>
+                    <span>View Graph</span>
+                </div>
+            </div>
+
+            <div class="location-section">
+                <div class="badge-left">Location</div>
+            </div>
+
+        </div>
+        </div>
+
+        <script>
+            // Desain dibuat pada lebar dasar 390px.
+            // Di layar <= 430px (HP), scale menyesuaikan lebar device asli,
+            // sehingga tampilan proporsinya SELALU identik di semua HP
+            // (bukan reflow ulang yang membuat sebagian terlihat lebih besar/kecil).
+            // Di layar > 430px (desktop), tetap tampil sebagai kartu 390px terpusat (scale 1).
+            const BASE_WIDTH = 390;
+            const MOBILE_BREAKPOINT = 430;
+
+            function fitToScreen() {
+                const container = document.querySelector('.mobile-container');
+                const wrapper = document.querySelector('.scale-wrapper');
+                const vw = window.innerWidth;
+
+                const scale = vw <= MOBILE_BREAKPOINT ? (vw / BASE_WIDTH) : 1;
+                container.style.transform = `scale(${scale})`;
+                wrapper.style.height = (container.offsetHeight * scale) + 'px';
+            }
+
+            window.addEventListener('DOMContentLoaded', fitToScreen);
+            window.addEventListener('resize', fitToScreen);
+            fitToScreen(); // jalankan langsung juga, jangan tunggu 'load' (macet karena video_feed adalah stream MJPEG yang tak pernah "selesai")
+        </script>
     </body>
     </html>
     """
