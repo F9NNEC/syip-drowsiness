@@ -14,20 +14,20 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 import serial
 
-app = Flask(__name__)
-
 load_dotenv()
 
-app.secret_key = os.environ.get('DASHBOARD_SECRET_KEY', 'ardiganteng123')
-app.permanent_session_lifetime = timedelta(days=7)  # login bertahan 7 hari, tidak perlu login ulang tiap buka
+app = Flask(__name__)
 
-DASHBOARD_USERNAME = os.environ.get('DASHBOARD_USERNAME', 'ardi')
+# KONFIGURASI LOGIN DASHBOARD
+app.secret_key = os.environ.get('DASHBOARD_SECRET_KEY')
+app.permanent_session_lifetime = timedelta(days=7)
+
+DASHBOARD_USERNAME = os.environ.get('DASHBOARD_USERNAME')
 DASHBOARD_PASSWORD_HASH = generate_password_hash(
-    os.environ.get('DASHBOARD_PASSWORD', 'gantengg')
+    os.environ.get('DASHBOARD_PASSWORD')
 )
 
 def login_required(f):
-    """ Decorator: route yang dipasangi ini wajib login dulu sebelum bisa diakses. """
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get('logged_in'):
@@ -35,11 +35,10 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# --- PENGATURAN BACKEND KAMERA TEPAT SASARAN ---
 if platform.system() == 'Windows':
-    backend = cv2.CAP_DSHOW  # Lebih cepat untuk Windows & kamera eksternal
+    backend = cv2.CAP_DSHOW  # Windows
 else:
-    backend = cv2.CAP_V4L2   # Lebih cepat untuk Linux / Raspberry Pi
+    backend = cv2.CAP_V4L2   # Raspberry Pi
 
 def distance(p1, p2):
     return (((p1[:2] - p2[:2]) ** 2).sum()) ** 0.5
@@ -129,7 +128,6 @@ def run_face_mp(image):
     return ear, mar, puc, moe, image
 
 def calibrate(calib_frame_count=75):
-    """ Proses kalibrasi secara diam-diam di background sebelum server start """
     ears = []
     mars = []
     pucs = []
@@ -137,7 +135,6 @@ def calibrate(calib_frame_count=75):
 
     print('\n[INFO] Menjalankan Kalibrasi... Pastikan wajah ada di depan kamera.')
     
-    # PERBAIKAN: Gunakan backend DSHOW/V4L2 dan kurangi buffer
     cap = cv2.VideoCapture(0, backend)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
@@ -183,19 +180,32 @@ def get_classification(input_data):
     model_input = torch.FloatTensor(np.array(model_input))
     preds = torch.sigmoid(model(model_input)).gt(0.5).int().data.numpy()
     
-    # PERBAIKAN: Ubah menjadi >= 4 (Mayoritas dari 6 chunk)
     return int(preds.sum() >= 4)
 
-
-# --- BACKGROUND CAPTURE: kamera & deteksi hanya jalan SEKALI di sini ---
 # latest_frame menyimpan frame JPEG terakhir yang sudah diproses,
 # supaya semua device (banyak viewer) tinggal "membaca" frame yang sama
 # tanpa masing-masing membuka kamera / memanggil face_mesh sendiri-sendiri.
 latest_frame = None
 frame_lock = threading.Lock()
 
+CALIB_FRAME_COUNT = 75
+
+norm_lock = threading.Lock()
+current_norms = {'ears': None, 'mars': None, 'pucs': None, 'moes': None}
+
+calibration_requested = threading.Event()
+calibration_status_lock = threading.Lock()
+calibration_status = {'state': 'idle', 'progress': 0, 'total': CALIB_FRAME_COUNT}
+calib_buffer = {'ears': [], 'mars': [], 'pucs': [], 'moes': []}
+
 def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
     global latest_frame
+
+    with norm_lock:
+        current_norms['ears'] = ears_norm
+        current_norms['mars'] = mars_norm
+        current_norms['pucs'] = pucs_norm
+        current_norms['moes'] = moes_norm
 
     ear_main = 0
     mar_main = 0
@@ -207,13 +217,11 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
     input_data = []
     frame_before_run = 0
 
-    # PERBAIKAN: Gunakan backend DSHOW/V4L2 dan kurangi buffer
     cap = cv2.VideoCapture(0, backend)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     
-    # --- TAMBAHKAN EPSILON DI SINI (SEBELUM LOOP) ---
     epsilon = 1e-5 
     
     while cap.isOpened():
@@ -221,13 +229,68 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
         if not success:
             continue
 
-        # --- POTONGAN KODE BARU DI SINI ---
+        # KALIBRASI ULANG
+        if calibration_requested.is_set():
+            ear_raw, mar_raw, puc_raw, moe_raw, calib_image = run_face_mp(image)
+
+            if ear_raw != -1000:
+                calib_buffer['ears'].append(ear_raw)
+                calib_buffer['mars'].append(mar_raw)
+                calib_buffer['pucs'].append(puc_raw)
+                calib_buffer['moes'].append(moe_raw)
+
+            progress = len(calib_buffer['ears'])
+            with calibration_status_lock:
+                calibration_status['progress'] = progress
+
+            cv2.putText(calib_image, f"KALIBRASI ULANG... {progress}/{CALIB_FRAME_COUNT}",
+                        (int(0.05 * calib_image.shape[1]), int(0.12 * calib_image.shape[0])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+
+            if progress >= CALIB_FRAME_COUNT:
+                ears_arr = np.array(calib_buffer['ears'])
+                mars_arr = np.array(calib_buffer['mars'])
+                pucs_arr = np.array(calib_buffer['pucs'])
+                moes_arr = np.array(calib_buffer['moes'])
+
+                with norm_lock:
+                    current_norms['ears'] = [ears_arr.mean(), ears_arr.std()]
+                    current_norms['mars'] = [mars_arr.mean(), mars_arr.std()]
+                    current_norms['pucs'] = [pucs_arr.mean(), pucs_arr.std()]
+                    current_norms['moes'] = [moes_arr.mean(), moes_arr.std()]
+
+                calib_buffer['ears'].clear()
+                calib_buffer['mars'].clear()
+                calib_buffer['pucs'].clear()
+                calib_buffer['moes'].clear()
+
+                calibration_requested.clear()
+                with calibration_status_lock:
+                    calibration_status['state'] = 'done'
+                    calibration_status['progress'] = CALIB_FRAME_COUNT
+
+                ear_main = mar_main = puc_main = moe_main = 0
+                input_data = []
+                label = None
+
+            ret, buffer = cv2.imencode('.jpg', calib_image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if ret:
+                with frame_lock:
+                    latest_frame = buffer.tobytes()
+            continue  # skip proses deteksi normal di bawah selama kalibrasi
+
+        with norm_lock:
+            ears_norm_local = current_norms['ears']
+            mars_norm_local = current_norms['mars']
+            pucs_norm_local = current_norms['pucs']
+            moes_norm_local = current_norms['moes']
+
         ear, mar, puc, moe, image = run_face_mp(image)
         if ear != -1000:
-            ear = (ear - ears_norm[0]) / (ears_norm[1] + epsilon)
-            mar = (mar - mars_norm[0]) / (mars_norm[1] + epsilon)
-            puc = (puc - pucs_norm[0]) / (pucs_norm[1] + epsilon)
-            moe = (moe - moes_norm[0]) / (moes_norm[1] + epsilon)
+            ear = (ear - ears_norm_local[0]) / (ears_norm_local[1] + epsilon)
+            mar = (mar - mars_norm_local[0]) / (mars_norm_local[1] + epsilon)
+            puc = (puc - pucs_norm_local[0]) / (pucs_norm_local[1] + epsilon)
+            moe = (moe - moes_norm_local[0]) / (moes_norm_local[1] + epsilon)
             
             if ear_main == -1000:
                 ear_main = ear
@@ -259,7 +322,7 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
             frame_before_run = 0
             label = get_classification(input_data)
 
-            # --- KODE BARU: KIRIM SINYAL KE ARDUINO ---
+            # KIRIM SINYAL KE ARDUINO 
             if arduino is not None:
                 if label == 1: 
                     arduino.write(b'1') # Kirim sinyal ngantuk
@@ -294,8 +357,6 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
 
 
 def gen_frames_stream():
-    """ Setiap device yang buka /video_feed menjalankan generator ini,
-        tapi hanya MEMBACA latest_frame -- tidak membuka kamera sendiri. """
     while True:
         with frame_lock:
             frame = latest_frame
@@ -309,7 +370,7 @@ def gen_frames_stream():
         time.sleep(0.03)  # batasi ~30fps per viewer, cegah CPU spinning
 
 
-# --- INISIALISASI VARIABEL GLOBAL ---
+# INISIALISASI VARIABEL GLOBAL
 right_eye = [[33, 133], [160, 144], [159, 145], [158, 153]]
 left_eye = [[263, 362], [387, 373], [386, 374], [385, 380]]
 mouth = [[61, 291], [39, 181], [0, 17], [269, 405]]
@@ -325,15 +386,14 @@ face_mesh = mp_face_mesh.FaceMesh(
 mp_drawing = mp.solutions.drawing_utils
 drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 
-# Pastikan path ini benar di PC kamu
+# ganti path
 model_lstm_path = r'models\clf_lstm_jit6.pth'
 model = torch.jit.load(model_lstm_path)
 model.eval()
 
-# --- INISIALISASI KONEKSI ARDUINO VIA USB ---
+# INISIALISASI KONEKSI ARDUINO VIA USB
 try:
-    # '/dev/ttyACM0' adalah port default Arduino di Raspi. 
-    # Bisa juga '/dev/ttyUSB0'. Sesuaikan jika berbeda!
+    # '/dev/ttyACM0' '/dev/ttyUSB0'
     arduino = serial.Serial('COM8', 9600, timeout=1)
     print("\n[INFO] Berhasil terhubung ke Arduino via USB.")
 except Exception as e:
@@ -344,7 +404,7 @@ except Exception as e:
 ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None
 
 
-# --- FLASK ROUTES ---
+# FLASK
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
@@ -565,6 +625,56 @@ def index():
                 object-fit: cover; /* aman, rasio kotak == rasio kamera, jadi tidak memotong */
             }
 
+            /* Tombol & progress kalibrasi ulang */
+            .recalibrate-wrap {
+                margin-top: 10px;
+            }
+            .recalibrate-btn {
+                width: 100%;
+                padding: 10px;
+                border-radius: 12px;
+                border: 1px solid #e5e5e5;
+                background-color: #fff;
+                color: #111;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+            }
+            .recalibrate-btn:hover {
+                background-color: #f8f9fa;
+            }
+            .recalibrate-btn:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+            .recalibrate-progress-track {
+                width: 100%;
+                height: 6px;
+                border-radius: 6px;
+                background-color: #eee;
+                margin-top: 8px;
+                overflow: hidden;
+                display: none;
+            }
+            .recalibrate-progress-fill {
+                height: 100%;
+                width: 0%;
+                background-color: #111;
+                border-radius: 6px;
+                transition: width 0.2s ease;
+            }
+            .recalibrate-status-text {
+                font-size: 11px;
+                color: #888;
+                margin-top: 6px;
+                text-align: center;
+                display: none;
+            }
+
             /* Heart Rate Section */
             .heart-card {
                 border: 1px solid #f0f0f0;
@@ -676,6 +786,16 @@ def index():
                 <div class="video-container">
                     <img id="video" src="/video_feed" alt="Video Feed">
                 </div>
+
+                <div class="recalibrate-wrap">
+                    <button class="recalibrate-btn" id="recalibrateBtn" onclick="startRecalibrate()">
+                        Kalibrasi Ulang
+                    </button>
+                    <div class="recalibrate-progress-track" id="recalibrateTrack">
+                        <div class="recalibrate-progress-fill" id="recalibrateFill"></div>
+                    </div>
+                    <div class="recalibrate-status-text" id="recalibrateStatusText"></div>
+                </div>
             </div>
 
             <div class="heart-card">
@@ -730,6 +850,63 @@ def index():
             window.addEventListener('DOMContentLoaded', fitToScreen);
             window.addEventListener('resize', fitToScreen);
             fitToScreen(); // jalankan langsung juga, jangan tunggu 'load' (macet karena video_feed adalah stream MJPEG yang tak pernah "selesai")
+
+            // --- Kalibrasi Ulang ---
+            const recalibrateBtn = document.getElementById('recalibrateBtn');
+            const recalibrateTrack = document.getElementById('recalibrateTrack');
+            const recalibrateFill = document.getElementById('recalibrateFill');
+            const recalibrateStatusText = document.getElementById('recalibrateStatusText');
+            let pollTimer = null;
+
+            function startRecalibrate() {
+                recalibrateBtn.disabled = true;
+                recalibrateBtn.textContent = 'Mengkalibrasi...';
+                recalibrateTrack.style.display = 'block';
+                recalibrateStatusText.style.display = 'block';
+                recalibrateStatusText.textContent = 'Mempersiapkan kalibrasi...';
+                recalibrateFill.style.width = '0%';
+
+                fetch('/recalibrate', { method: 'POST' })
+                    .then(res => res.json())
+                    .then(() => {
+                        pollTimer = setInterval(pollCalibrationStatus, 400);
+                    })
+                    .catch(() => {
+                        recalibrateStatusText.textContent = 'Gagal memulai kalibrasi. Coba lagi.';
+                        resetRecalibrateButton();
+                    });
+            }
+
+            function pollCalibrationStatus() {
+                fetch('/calibration_status')
+                    .then(res => res.json())
+                    .then(data => {
+                        const pct = Math.round((data.progress / data.total) * 100);
+                        recalibrateFill.style.width = pct + '%';
+                        recalibrateStatusText.textContent =
+                            `Mengumpulkan data wajah... ${data.progress}/${data.total}`;
+
+                        if (data.state === 'done') {
+                            clearInterval(pollTimer);
+                            recalibrateStatusText.textContent = 'Kalibrasi selesai!';
+                            setTimeout(() => {
+                                recalibrateTrack.style.display = 'none';
+                                recalibrateStatusText.style.display = 'none';
+                                resetRecalibrateButton();
+                            }, 1500);
+                        }
+                    })
+                    .catch(() => {
+                        clearInterval(pollTimer);
+                        recalibrateStatusText.textContent = 'Gagal mengambil status kalibrasi.';
+                        resetRecalibrateButton();
+                    });
+            }
+
+            function resetRecalibrateButton() {
+                recalibrateBtn.disabled = false;
+                recalibrateBtn.textContent = 'Kalibrasi Ulang';
+            }
         </script>
     </body>
     </html>
@@ -741,8 +918,33 @@ def video_feed():
     return Response(gen_frames_stream(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/recalibrate', methods=['POST'])
+@login_required
+def recalibrate():
+    if calibration_requested.is_set():
+        return {'status': 'already_running'}, 200
+
+    calib_buffer['ears'].clear()
+    calib_buffer['mars'].clear()
+    calib_buffer['pucs'].clear()
+    calib_buffer['moes'].clear()
+
+    with calibration_status_lock:
+        calibration_status['state'] = 'calibrating'
+        calibration_status['progress'] = 0
+        calibration_status['total'] = CALIB_FRAME_COUNT
+
+    calibration_requested.set()
+    return {'status': 'started'}, 200
+
+@app.route('/calibration_status')
+@login_required
+def calibration_status_route():
+    """ Dipanggil berkala (polling) dari web untuk menampilkan progress. """
+    with calibration_status_lock:
+        return dict(calibration_status)
+
 if __name__ == '__main__':
-    # Eksekusi kalibrasi terlebih dahulu sebelum server web menyala
     ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = calibrate()
 
     # Jalankan kamera + deteksi SEKALI di background thread.
