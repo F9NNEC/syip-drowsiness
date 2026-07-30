@@ -245,7 +245,7 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
 
             cv2.putText(calib_image, f"KALIBRASI ULANG... {progress}/{CALIB_FRAME_COUNT}",
                         (int(0.05 * calib_image.shape[1]), int(0.12 * calib_image.shape[0])),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 140, 255), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
             if progress >= CALIB_FRAME_COUNT:
                 ears_arr = np.array(calib_buffer['ears'])
