@@ -1,5 +1,7 @@
 import serial
 import logging
+import threading
+from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,16 +18,52 @@ class ESP32Connection:
         self.port = port
         self.baudrate = baudrate
         self.serial = None
+        self.reader_thread = None
+        self.running = False
         self.connect()
 
     def connect(self):
         """Connect to ESP32."""
         try:
             self.serial = serial.Serial(self.port, self.baudrate, timeout=1)
+            self.running = True
+            self.reader_thread = threading.Thread(target=self._read_loop, daemon=True)
+            self.reader_thread.start()
             logger.info(f"✓ ESP32 terhubung di port {self.port}")
+            print(f"\n{'='*50}")
+            print(f"  📡 TERMINAL SERIAL MONITOR")
+            print(f"{'='*50}\n")
         except Exception as e:
             logger.warning(f"✗ ESP32 tidak ditemukan di {self.port}. Error: {e}")
             self.serial = None
+            self.running = False
+
+    def _read_loop(self):
+        """Read incoming data from ESP32 and print it in terminal."""
+        while self.running and self.serial is not None:
+            try:
+                if self.serial.in_waiting > 0:
+                    line = self.serial.readline()
+                    if not line:
+                        continue
+
+                    text = line.decode('utf-8', errors='replace').strip()
+                    if not text:
+                        continue
+
+                    timestamp = datetime.now().strftime("%H:%M:%S")
+
+                    if text.startswith('$'):
+                        print(f"[{timestamp}] GPS: {text}")
+                    else:
+                        print(f"[{timestamp}] ESP32: {text}")
+                else:
+                    # short sleep supaya thread tidak membebani CPU
+                    import time
+                    time.sleep(0.05)
+            except Exception as e:
+                logger.error(f"Error reading ESP32 data: {e}")
+                break
 
     def is_connected(self):
         """Check if ESP32 is connected."""
@@ -58,11 +96,12 @@ class ESP32Connection:
 
     def disconnect(self):
         """Disconnect from ESP32."""
+        self.running = False
         if self.serial is not None:
             try:
                 self.serial.close()
                 logger.info("ESP32 disconnected")
-            except:
+            except Exception:
                 pass
             self.serial = None
 
