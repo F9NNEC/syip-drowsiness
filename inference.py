@@ -8,7 +8,7 @@ import platform
 import threading
 import os
 from dotenv import load_dotenv
-import serial
+from microcontroller import init_esp32, get_esp32, close_esp32
 
 load_dotenv()
 
@@ -299,12 +299,13 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
             frame_before_run = 0
             label = get_classification(input_data)
 
-            # KIRIM SINYAL KE ARDUINO 
-            if arduino is not None:
-                if label == 1: 
-                    arduino.write(b'1') # Kirim sinyal ngantuk
-                else:          
-                    arduino.write(b'0') # Kirim sinyal alert (bangun)
+            # KIRIM SINYAL KE ESP32
+            esp = get_esp32()
+            if esp and esp.is_connected():
+                if label == 1:
+                    esp.send_drowsy()
+                else:
+                    esp.send_alert()
 
         # Gambar teks indikator
         cv2.putText(image, "EAR: %.2f" % (ear_main), (int(0.02 * image.shape[1]), int(0.07 * image.shape[0])),
@@ -368,14 +369,8 @@ model_lstm_path = r'models\clf_lstm_jit6.pth'
 model = torch.jit.load(model_lstm_path)
 model.eval()
 
-# INISIALISASI KONEKSI ARDUINO VIA USB
-try:
-    # '/dev/ttyACM0' '/dev/ttyUSB0'
-    arduino = serial.Serial('COM8', 9600, timeout=1)
-    print("\n[INFO] Berhasil terhubung ke Arduino via USB.")
-except Exception as e:
-    arduino = None
-    print(f"\n[WARNING] Arduino tidak terdeteksi. Error: {e}")
+# INISIALISASI KONEKSI ESP32
+esp32 = init_esp32(port='COM3')
 
 # Global norm variable untuk menampung hasil kalibrasi
 ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None
@@ -396,6 +391,13 @@ def start_detection():
     )
     capture_thread.start()
 
+def cleanup():
+    """Cleanup resources (close ESP32 connection, etc)."""
+    close_esp32()
+
 if __name__ == '__main__':
     start_detection()
     print('[INFO] Deteksi wajah berjalan di background thread.')
+    esp = get_esp32()
+    status = "✓ Terhubung" if esp and esp.is_connected() else "✗ Tidak terhubung"
+    print(f'[INFO] ESP32 {status}')

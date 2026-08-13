@@ -12,7 +12,8 @@ from inference import (
     calibration_status_lock,
     calib_buffer,
     CALIB_FRAME_COUNT,
-    start_detection
+    start_detection,
+    cleanup
 )
 
 load_dotenv()
@@ -587,8 +588,11 @@ if __name__ == '__main__':
     # Start detection thread
     start_detection()
     
-    print('[INFO] Memulai server Flask. Buka http://127.0.0.1:5000 di browser.')
+    print('[INFO] Server Flask berjalan di http://127.0.0.1:5000')
     try:
         app.run(host='0.0.0.0', port=5000, threaded=True)
     except KeyboardInterrupt:
-        print('[INFO] Server dihentikan.')
+        print('\n[INFO] Server dihentikan.')
+    finally:
+        cleanup()
+        print('[INFO] Cleanup selesai.')
