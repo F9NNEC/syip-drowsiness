@@ -6,7 +6,7 @@ import os
 import threading
 from dotenv import load_dotenv
 
-from microcontroller import init_esp32
+from microcontroller import init_esp32, get_gps_data
 from inference import (
     gen_frames_stream,
     calibration_requested,
@@ -398,12 +398,25 @@ def index():
                 box-shadow: 0 2px 8px rgba(0,0,0,0.08);
                 z-index: 10;
             }
-            .location-section img {
+            #map {
                 width: 100%;
                 height: 100%;
-                object-fit: cover;
+                background: #dfe8ea;
+            }
+            .location-meta {
+                position: absolute;
+                left: 12px;
+                bottom: 12px;
+                background: rgba(255,255,255,0.9);
+                border-radius: 10px;
+                padding: 8px 10px;
+                font-size: 11px;
+                color: #333;
+                z-index: 500;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             }
         </style>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     </head>
     <body>
         <div class="scale-wrapper">
@@ -461,11 +474,14 @@ def index():
 
             <div class="location-section">
                 <div class="badge-left">Location</div>
+                <div id="map"></div>
+                <div class="location-meta" id="locationMeta">Menunggu GPS...</div>
             </div>
 
         </div>
         </div>
 
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
         <script>
             // Desain dibuat pada lebar dasar 390px.
             // Di layar <= 430px (HP), scale menyesuaikan lebar device asli,
@@ -545,9 +561,42 @@ def index():
                 recalibrateBtn.disabled = false;
                 recalibrateBtn.textContent = 'Kalibrasi Ulang';
             }
+
+            // --- GPS Map ---
+            const map = L.map('map', { zoomControl: false }).setView([-2.885477, 104.715871], 14);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            let marker = L.marker([-2.885477, 104.715871]).addTo(map);
+
+            function updateGpsMap(data) {
+                if (!data || data.lat == null || data.lng == null) return;
+
+                const latlng = [data.lat, data.lng];
+                marker.setLatLng(latlng);
+                map.setView(latlng, 16);
+
+                const speedText = data.speed != null ? data.speed.toFixed(2) + ' km/h' : 'speed n/a';
+                document.getElementById('locationMeta').textContent =
+                    `Lat: ${data.lat.toFixed(5)}, Lng: ${data.lng.toFixed(5)} | ${speedText}`;
+            }
+
+            async function fetchGps() {
+                try {
+                    const res = await fetch('/gps_data');
+                    const data = await res.json();
+                    updateGpsMap(data);
+                } catch (err) {
+                    console.log('GPS belum tersedia');
+                }
+            }
+
+            setInterval(fetchGps, 1000);
+            fetchGps();
         </script>
     </body>
-    </html>
+</html>
     """
 
 
@@ -584,6 +633,12 @@ def calibration_status_route():
     """ Dipanggil berkala (polling) dari web untuk menampilkan progress. """
     with calibration_status_lock:
         return dict(calibration_status)
+
+
+@app.route('/gps_data')
+@login_required
+def gps_data():
+    return get_gps_data()
 
 
 if __name__ == '__main__':

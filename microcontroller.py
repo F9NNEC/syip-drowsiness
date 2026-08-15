@@ -1,10 +1,19 @@
 import serial
 import logging
 import threading
+import json
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+gps_lock = threading.Lock()
+last_gps = {"lat": None, "lng": None, "speed": None}
+
+
+def get_gps_data():
+    with gps_lock:
+        return dict(last_gps)
 
 
 class ESP32Connection:
@@ -53,7 +62,20 @@ class ESP32Connection:
 
                     timestamp = datetime.now().strftime("%H:%M:%S")
 
-                    if text.startswith('$'):
+                    if text.startswith('{'):
+                        try:
+                            data = json.loads(text)
+                            lat = data.get('lat')
+                            lng = data.get('lng')
+                            speed = data.get('speed')
+                            if lat is not None and lng is not None:
+                                with gps_lock:
+                                    last_gps['lat'] = float(lat)
+                                    last_gps['lng'] = float(lng)
+                                    last_gps['speed'] = float(speed) if speed is not None else None
+                        except Exception:
+                            pass
+                    elif text.startswith('$'):
                         print(f"[{timestamp}] GPS: {text}")
                     else:
                         print(f"[{timestamp}] ESP32: {text}")
