@@ -104,19 +104,14 @@ def run_face_mp(image):
 
     return ear, mar, puc, moe, image
 
-def calibrate(calib_frame_count=75):
+def collect_calibration_frames(cap, calib_frame_count=75):
     ears = []
     mars = []
     pucs = []
     moes = []
 
     print('\n[INFO] Menjalankan Kalibrasi... Pastikan wajah ada di depan kamera.')
-    
-    cap = cv2.VideoCapture(0, backend)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-    
+
     while cap.isOpened():
         success, image = cap.read()
         if not success:
@@ -128,22 +123,22 @@ def calibrate(calib_frame_count=75):
             mars.append(mar)
             pucs.append(puc)
             moes.append(moe)
-            
+
             print(f'Progres Kalibrasi: {len(ears)}/{calib_frame_count} frame', end='\r')
 
         if len(ears) >= calib_frame_count:
             break
 
-    cap.release()
     print('\n[INFO] Kalibrasi Selesai!\n')
-    
+
     ears = np.array(ears)
     mars = np.array(mars)
     pucs = np.array(pucs)
     moes = np.array(moes)
-    
+
     return [ears.mean(), ears.std()], [mars.mean(), mars.std()], \
            [pucs.mean(), pucs.std()], [moes.mean(), moes.std()]
+
 
 def get_classification(input_data):
     model_input = []
@@ -175,7 +170,7 @@ calibration_status_lock = threading.Lock()
 calibration_status = {'state': 'idle', 'progress': 0, 'total': CALIB_FRAME_COUNT}
 calib_buffer = {'ears': [], 'mars': [], 'pucs': [], 'moes': []}
 
-def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
+def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     global latest_frame
 
     with norm_lock:
@@ -188,19 +183,14 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
     mar_main = 0
     puc_main = 0
     moe_main = 0
-    decay = 0.9 
+    decay = 0.9
 
     label = None
     input_data = []
     frame_before_run = 0
 
-    cap = cv2.VideoCapture(0, backend)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-    
-    epsilon = 1e-5 
-    
+    epsilon = 1e-5
+
     while cap.isOpened():
         success, image = cap.read()
         if not success:
@@ -294,11 +284,6 @@ def capture_loop(ears_norm, mars_norm, pucs_norm, moes_norm):
             frame_before_run = 0
             label = get_classification(input_data)
 
-        frame_before_run += 1
-        if frame_before_run >= 15 and len(input_data) == 20:
-            frame_before_run = 0
-            label = get_classification(input_data)
-
             # KIRIM SINYAL KE ESP32
             esp = get_esp32()
             if esp and esp.is_connected():
@@ -374,25 +359,35 @@ esp32 = init_esp32(port='COM3')
 
 # Global norm variable untuk menampung hasil kalibrasi
 ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None
+camera_cap = None
 
 def start_detection():
-    """Start the detection and frame capture loop in background thread."""
-    global ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g
-    
-    ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = calibrate()
+    """Buka kamera sekali, lalu langsung kalibrasi dan masuk loop deteksi."""
+    global ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g, camera_cap
 
-    # Jalankan kamera + deteksi SEKALI di background thread.
-    # Semua device yang buka dashboard (banyak viewer sekaligus) hanya
-    # membaca latest_frame lewat gen_frames_stream(), bukan membuka kamera baru.
+    if camera_cap is not None and camera_cap.isOpened():
+        camera_cap.release()
+
+    camera_cap = cv2.VideoCapture(0, backend)
+    camera_cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
+    camera_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+    camera_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+
+    ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = collect_calibration_frames(camera_cap)
+
     capture_thread = threading.Thread(
         target=capture_loop,
-        args=(ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g),
+        args=(camera_cap, ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g),
         daemon=True
     )
     capture_thread.start()
 
+
 def cleanup():
     """Cleanup resources (close ESP32 connection, etc)."""
+    global camera_cap
+    if camera_cap is not None and camera_cap.isOpened():
+        camera_cap.release()
     close_esp32()
 
 if __name__ == '__main__':
