@@ -6,9 +6,8 @@ import time
 import torch
 import platform
 import threading
-import os
 from dotenv import load_dotenv
-from microcontroller import init_esp32, get_esp32, close_esp32
+from microcontroller import get_esp32, close_esp32
 
 load_dotenv()
 
@@ -353,9 +352,6 @@ drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 model_lstm_path = r'models\clf_lstm_jit6.pth'
 model = torch.jit.load(model_lstm_path)
 model.eval()
-
-# INISIALISASI KONEKSI ESP32
-esp32 = init_esp32(port='COM3')
 
 # Global norm variable untuk menampung hasil kalibrasi
 ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = None, None, None, None

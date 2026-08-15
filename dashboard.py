@@ -3,8 +3,10 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from datetime import timedelta
 import os
+import threading
 from dotenv import load_dotenv
 
+from microcontroller import init_esp32
 from inference import (
     gen_frames_stream,
     calibration_requested,
@@ -585,10 +587,11 @@ def calibration_status_route():
 
 
 if __name__ == '__main__':
-    # Start detection thread
     start_detection()
-    
+
     print('[INFO] Server Flask berjalan di http://127.0.0.1:5000')
+    threading.Timer(1.5, lambda: init_esp32(port='COM3')).start()
+
     try:
         app.run(host='0.0.0.0', port=5000, threaded=True)
     except KeyboardInterrupt:
