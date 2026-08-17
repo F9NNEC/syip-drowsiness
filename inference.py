@@ -211,7 +211,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
 
             cv2.putText(calib_image, f"KALIBRASI ULANG... {progress}/{CALIB_FRAME_COUNT}",
                         (int(0.05 * calib_image.shape[1]), int(0.12 * calib_image.shape[0])),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
             if progress >= CALIB_FRAME_COUNT:
                 ears_arr = np.array(calib_buffer['ears'])
@@ -293,16 +293,16 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
 
         # Gambar teks indikator
         cv2.putText(image, "EAR: %.2f" % (ear_main), (int(0.02 * image.shape[1]), int(0.07 * image.shape[0])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         cv2.putText(image, "MAR: %.2f" % (mar_main), (int(0.27 * image.shape[1]), int(0.07 * image.shape[0])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         cv2.putText(image, "PUC: %.2f" % (puc_main), (int(0.52 * image.shape[1]), int(0.07 * image.shape[0])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         cv2.putText(image, "MOE: %.2f" % (moe_main), (int(0.77 * image.shape[1]), int(0.07 * image.shape[0])),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-        
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
         if label is not None:
-            color = (0, 255, 0) if label == 0 else (0, 0, 255)
+            color = (255, 255, 255) if label == 0 else (0, 0, 255)
             cv2.putText(image, "%s" % (states[label]), (int(0.02 * image.shape[1]), int(0.2 * image.shape[0])),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 2)
 
