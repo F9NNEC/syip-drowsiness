@@ -226,30 +226,48 @@ latest_frame = None
 frame_lock = threading.Lock()
 
 CALIB_FRAME_COUNT = 75
-EYE_CLOSURE_THRESHOLD = -1.0
-HEAD_DOWN_PITCH_MIN = -165.0
+HEAD_DOWN_PITCH_MIN = -167.0
 HEAD_DOWN_PITCH_MAX = -1.0
 HEAD_UP_PITCH_MIN = 1.0
-HEAD_UP_PITCH_MAX = 165.0
-HEAD_TURN_YAW_THRESHOLD = 20.0
+HEAD_UP_PITCH_MAX = 173.0
+HEAD_TURN_YAW_THRESHOLD = 15.0
+HEAD_TILT_ROLL_THRESHOLD = 15.0
+POSE_RETURN_GRACE_SECONDS = 1.0
 
-def get_detection_status(model_label, ear_value, head_pose):
-    eye_closed = ear_value != -1000 and ear_value <= EYE_CLOSURE_THRESHOLD
+def is_looking_away(head_pose):
     if head_pose is None:
-        return 'normal'
+        return False
 
-    pitch, yaw, _ = head_pose
-    looking_down = HEAD_DOWN_PITCH_MIN <= pitch <= HEAD_DOWN_PITCH_MAX
+    pitch, yaw, roll = head_pose
     looking_up = HEAD_UP_PITCH_MIN <= pitch <= HEAD_UP_PITCH_MAX
     looking_sideways = abs(yaw) > HEAD_TURN_YAW_THRESHOLD
-    if looking_up or looking_sideways:
+    head_tilted = abs(roll) > HEAD_TILT_ROLL_THRESHOLD
+    return looking_up or looking_sideways or head_tilted
+
+def get_detection_status(model_label, head_pose):
+    if head_pose is None:
+        return 'drowsy' if model_label == 1 else 'normal'
+
+    pitch, yaw, roll = head_pose
+    looking_down = HEAD_DOWN_PITCH_MIN <= pitch <= HEAD_DOWN_PITCH_MAX
+    if is_looking_away(head_pose):
         return 'normal'
 
     if model_label == 1 and looking_down:
         return 'danger'
-    if model_label == 1 or eye_closed:
+    if model_label == 1:
         return 'drowsy'
     return 'normal'
+
+def get_status_with_pose_grace(model_label, head_pose, last_away_time, current_time):
+    pose_unavailable_after_away = head_pose is None and last_away_time is not None
+    if is_looking_away(head_pose) or pose_unavailable_after_away:
+        return 'normal', current_time
+
+    if last_away_time is not None and current_time - last_away_time < POSE_RETURN_GRACE_SECONDS:
+        return 'normal', last_away_time
+
+    return get_detection_status(model_label, head_pose), None
 
 norm_lock = threading.Lock()
 current_norms = {'ears': None, 'mars': None, 'pucs': None, 'moes': None}
@@ -277,6 +295,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     model_label = 0
     status = 'normal'
     last_sent_status = None
+    last_away_time = None
     input_data = []
     frame_before_run = 0
 
@@ -367,16 +386,25 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
             puc_main = -1000
             moe_main = -1000
 
-        if len(input_data) == 20:
-            input_data.pop(0)
-        input_data.append([ear_main, mar_main, puc_main, moe_main])
-
-        frame_before_run += 1
-        if frame_before_run >= 15 and len(input_data) == 20:
+        pose_away = is_looking_away(head_pose)
+        pose_lost_after_away = head_pose is None and last_away_time is not None
+        if pose_away or pose_lost_after_away:
+            input_data.clear()
             frame_before_run = 0
-            model_label = get_classification(input_data)
+            model_label = 0
+        else:
+            if len(input_data) == 20:
+                input_data.pop(0)
+            input_data.append([ear_main, mar_main, puc_main, moe_main])
 
-        status = get_detection_status(model_label, ear_main, head_pose)
+            frame_before_run += 1
+            if frame_before_run >= 15 and len(input_data) == 20:
+                frame_before_run = 0
+                model_label = get_classification(input_data)
+
+        status, last_away_time = get_status_with_pose_grace(
+            model_label, head_pose, last_away_time, time.monotonic()
+        )
         if status != last_sent_status:
             esp = get_esp32()
             if esp and esp.is_connected():
