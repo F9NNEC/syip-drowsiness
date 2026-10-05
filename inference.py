@@ -53,6 +53,68 @@ def pupil_feature(landmarks):
     return (pupil_circularity(landmarks, left_eye) + \
             pupil_circularity(landmarks, right_eye)) / 2
 
+def draw_head_pose(image, landmarks):
+    height, width = image.shape[:2]
+    image_points = np.array([
+        [landmarks[index].x * width, landmarks[index].y * height]
+        for index in [1, 152, 33, 263, 61, 291]
+    ], dtype=np.float64)
+    model_points = np.array([
+        [0.0, 0.0, 0.0],
+        [0.0, -330.0, -65.0],
+        [-225.0, 170.0, -135.0],
+        [225.0, 170.0, -135.0],
+        [-150.0, -150.0, -125.0],
+        [150.0, -150.0, -125.0]
+    ], dtype=np.float64)
+
+    focal_length = width
+    camera_matrix = np.array([
+        [focal_length, 0, width / 2],
+        [0, focal_length, height / 2],
+        [0, 0, 1]
+    ], dtype=np.float64)
+    distortion = np.zeros((4, 1))
+
+    success, rotation_vector, translation_vector = cv2.solvePnP(
+        model_points, image_points, camera_matrix, distortion,
+        flags=cv2.SOLVEPNP_ITERATIVE
+    )
+    if not success:
+        return
+
+    rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+    angles = cv2.RQDecomp3x3(rotation_matrix)[0]
+    pitch, yaw, roll = angles
+
+    axis_length = 120
+    axis = np.float64([
+        [0, 0, 0],
+        [axis_length, 0, 0],
+        [0, axis_length, 0],
+        [0, 0, axis_length]
+    ])
+    projected_axis, _ = cv2.projectPoints(
+        axis, rotation_vector, translation_vector, camera_matrix, distortion
+    )
+    origin, x_axis, y_axis, z_axis = projected_axis.reshape(-1, 2).astype(int)
+    origin = tuple(origin)
+    axes = [
+        (x_axis, (0, 0, 255), 'X'),
+        (y_axis, (0, 255, 0), 'Y'),
+        (z_axis, (255, 0, 0), 'Z')
+    ]
+    for endpoint, color, label in axes:
+        endpoint = tuple(endpoint)
+        cv2.arrowedLine(image, origin, endpoint, color, 2, tipLength=0.15)
+        cv2.putText(image, label, endpoint, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    cv2.putText(
+        image, f'Yaw: {yaw:.1f}  Pitch: {pitch:.1f}  Roll: {roll:.1f}',
+        (int(0.02 * width), int(0.94 * height)),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2
+    )
+
 def run_face_mp(image):
     image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
     image.flags.writeable = False
@@ -90,6 +152,8 @@ def run_face_mp(image):
                 connections=mp_face_mesh.FACEMESH_RIGHT_EYE,
                 landmark_drawing_spec=None,
                 connection_drawing_spec=drawing_spec)
+
+            draw_head_pose(image, face_landmarks.landmark)
 
         ear = eye_feature(landmarks_positions)
         mar = mouth_feature(landmarks_positions)
