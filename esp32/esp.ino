@@ -25,7 +25,7 @@ void loop() {
     if (Serial.available()) {
         int signal = Serial.read();
         
-        if (signal == 1) {
+        if (signal == 1 || signal == 2) {
             digitalWrite(BUZZER_PIN, HIGH);
         } else {
             digitalWrite(BUZZER_PIN, LOW);

@@ -96,7 +96,7 @@ class ESP32Connection:
         Send signal to ESP32.
         
         Args:
-            signal: 1 (drowsy/alarm) atau 0 (alert/normal)
+            signal: 0 (normal), 1 (drowsy), atau 2 (danger)
         """
         if not self.is_connected():
             return False
@@ -111,6 +111,10 @@ class ESP32Connection:
     def send_drowsy(self):
         """Send drowsy signal (1)."""
         return self.send(1)
+
+    def send_danger(self):
+        """Send danger signal (2)."""
+        return self.send(2)
 
     def send_alert(self):
         """Send alert signal (0)."""

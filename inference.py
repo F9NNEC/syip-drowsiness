@@ -81,7 +81,7 @@ def draw_head_pose(image, landmarks):
         flags=cv2.SOLVEPNP_ITERATIVE
     )
     if not success:
-        return
+        return None
 
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
     angles = cv2.RQDecomp3x3(rotation_matrix)[0]
@@ -101,8 +101,8 @@ def draw_head_pose(image, landmarks):
     origin = tuple(origin)
     axes = [
         (x_axis, (0, 0, 255), 'X'),
-        (y_axis, (0, 255, 0), 'Y'),
-        (z_axis, (255, 0, 0), 'Z')
+        (y_axis, (255, 0, 0), 'Z'),
+        (z_axis, (0, 255, 0), 'Y')
     ]
     for endpoint, color, label in axes:
         endpoint = tuple(endpoint)
@@ -114,6 +114,7 @@ def draw_head_pose(image, landmarks):
         (int(0.02 * width), int(0.94 * height)),
         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2
     )
+    return pitch, yaw, roll
 
 def run_face_mp(image):
     image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
@@ -123,6 +124,7 @@ def run_face_mp(image):
     image.flags.writeable = True
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
+    head_pose = None
     if results.multi_face_landmarks:
         landmarks_positions = []
         for _, data_point in enumerate(results.multi_face_landmarks[0].landmark):
@@ -153,7 +155,7 @@ def run_face_mp(image):
                 landmark_drawing_spec=None,
                 connection_drawing_spec=drawing_spec)
 
-            draw_head_pose(image, face_landmarks.landmark)
+            head_pose = draw_head_pose(image, face_landmarks.landmark)
 
         ear = eye_feature(landmarks_positions)
         mar = mouth_feature(landmarks_positions)
@@ -165,7 +167,7 @@ def run_face_mp(image):
         puc = -1000
         moe = -1000
 
-    return ear, mar, puc, moe, image
+    return ear, mar, puc, moe, image, head_pose
 
 def collect_calibration_frames(cap, calib_frame_count=75):
     ears = []
@@ -180,7 +182,7 @@ def collect_calibration_frames(cap, calib_frame_count=75):
         if not success:
             continue
 
-        ear, mar, puc, moe, _ = run_face_mp(image)
+        ear, mar, puc, moe, _, _ = run_face_mp(image)
         if ear != -1000:
             ears.append(ear)
             mars.append(mar)
@@ -224,6 +226,30 @@ latest_frame = None
 frame_lock = threading.Lock()
 
 CALIB_FRAME_COUNT = 75
+EYE_CLOSURE_THRESHOLD = -1.0
+HEAD_DOWN_PITCH_MIN = -165.0
+HEAD_DOWN_PITCH_MAX = -1.0
+HEAD_UP_PITCH_MIN = 1.0
+HEAD_UP_PITCH_MAX = 165.0
+HEAD_TURN_YAW_THRESHOLD = 20.0
+
+def get_detection_status(model_label, ear_value, head_pose):
+    eye_closed = ear_value != -1000 and ear_value <= EYE_CLOSURE_THRESHOLD
+    if head_pose is None:
+        return 'normal'
+
+    pitch, yaw, _ = head_pose
+    looking_down = HEAD_DOWN_PITCH_MIN <= pitch <= HEAD_DOWN_PITCH_MAX
+    looking_up = HEAD_UP_PITCH_MIN <= pitch <= HEAD_UP_PITCH_MAX
+    looking_sideways = abs(yaw) > HEAD_TURN_YAW_THRESHOLD
+    if looking_up or looking_sideways:
+        return 'normal'
+
+    if model_label == 1 and looking_down:
+        return 'danger'
+    if model_label == 1 or eye_closed:
+        return 'drowsy'
+    return 'normal'
 
 norm_lock = threading.Lock()
 current_norms = {'ears': None, 'mars': None, 'pucs': None, 'moes': None}
@@ -248,7 +274,9 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     moe_main = 0
     decay = 0.9
 
-    label = None
+    model_label = 0
+    status = 'normal'
+    last_sent_status = None
     input_data = []
     frame_before_run = 0
 
@@ -261,7 +289,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
 
         # KALIBRASI ULANG
         if calibration_requested.is_set():
-            ear_raw, mar_raw, puc_raw, moe_raw, calib_image = run_face_mp(image)
+            ear_raw, mar_raw, puc_raw, moe_raw, calib_image, _ = run_face_mp(image)
 
             if ear_raw != -1000:
                 calib_buffer['ears'].append(ear_raw)
@@ -301,7 +329,8 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
 
                 ear_main = mar_main = puc_main = moe_main = 0
                 input_data = []
-                label = None
+                model_label = 0
+                status = 'normal'
 
             ret, buffer = cv2.imencode('.jpg', calib_image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ret:
@@ -315,7 +344,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
             pucs_norm_local = current_norms['pucs']
             moes_norm_local = current_norms['moes']
 
-        ear, mar, puc, moe, image = run_face_mp(image)
+        ear, mar, puc, moe, image, head_pose = run_face_mp(image)
         if ear != -1000:
             ear = (ear - ears_norm_local[0]) / (ears_norm_local[1] + epsilon)
             mar = (mar - mars_norm_local[0]) / (mars_norm_local[1] + epsilon)
@@ -345,15 +374,20 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
         frame_before_run += 1
         if frame_before_run >= 15 and len(input_data) == 20:
             frame_before_run = 0
-            label = get_classification(input_data)
+            model_label = get_classification(input_data)
 
-            # KIRIM SINYAL KE ESP32
+        status = get_detection_status(model_label, ear_main, head_pose)
+        if status != last_sent_status:
             esp = get_esp32()
             if esp and esp.is_connected():
-                if label == 1:
-                    esp.send_drowsy()
+                if status == 'danger':
+                    sent = esp.send_danger()
+                elif status == 'drowsy':
+                    sent = esp.send_drowsy()
                 else:
-                    esp.send_alert()
+                    sent = esp.send_alert()
+                if sent:
+                    last_sent_status = status
 
         # Gambar teks indikator
         cv2.putText(image, "EAR: %.2f" % (ear_main), (int(0.02 * image.shape[1]), int(0.07 * image.shape[0])),
@@ -365,9 +399,9 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
         cv2.putText(image, "MOE: %.2f" % (moe_main), (int(0.77 * image.shape[1]), int(0.07 * image.shape[0])),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-        if label is not None:
-            color = (255, 255, 255) if label == 0 else (0, 0, 255)
-            cv2.putText(image, "%s" % (states[label]), (int(0.02 * image.shape[1]), int(0.2 * image.shape[0])),
+        if status != 'normal':
+            color = (0, 0, 255) if status == 'danger' else (0, 165, 255)
+            cv2.putText(image, status.upper(), (int(0.02 * image.shape[1]), int(0.2 * image.shape[0])),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.5, color, 2)
 
         # Encode gambar ke format JPEG
