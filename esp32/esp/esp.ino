@@ -22,6 +22,8 @@ unsigned long lastDisplayTime = 0;
 const unsigned long DISPLAY_INTERVAL = 2000;
 
 bool paused = false;
+bool calibrationRunning = false;
+int alarmSignal = 0;
 int cursor = 0;
 int gpsPage = 0;
 int screenPage = 0;
@@ -47,13 +49,27 @@ void setup() {
 }
 
 void loop() {
-  if (Serial.available()) {
+  while (Serial.available()) {
     int signal = Serial.read();
 
-    if (signal == 1 || signal == 2) {
-      digitalWrite(BUZZER_PIN, HIGH);
-    } else {
+    if (signal == 3 && calibrationRunning) {
+      calibrationRunning = false;
+      lcd.clear();
+      lcd.setCursor(2, 0);
+      lcd.print("Kalibrasi");
+      lcd.setCursor(2, 1);
+      lcd.print("Selesai");
+      delay(1000);
+      updateLCD();
+    } else if (signal == 1 || signal == 2) {
+      if (signal != alarmSignal) {
+        tone(BUZZER_PIN, signal == 1 ? 2000 : 2500);
+        alarmSignal = signal;
+      }
+    } else if (signal == 0) {
+      noTone(BUZZER_PIN);
       digitalWrite(BUZZER_PIN, LOW);
+      alarmSignal = 0;
     }
   }
 
@@ -98,6 +114,7 @@ void loop() {
         startupSound();
       }
 
+      Serial.println(paused ? "CMD:PAUSE" : "CMD:START");
       updateLCD();
     } else if (screenPage == 0 && cursor == 1) {
       calibrateSystem();
@@ -134,6 +151,14 @@ void loop() {
 }
 
 void updateLCD() {
+  if (calibrationRunning) {
+    lcd.setCursor(0, 0);
+    lcd.print("Kalibrasi       ");
+    lcd.setCursor(0, 1);
+    lcd.print("Mohon tunggu... ");
+    return;
+  }
+
   if (screenPage == 0) {
     lcd.setCursor(0, 0);
     lcd.print(cursor == 0 ? "> " : "  ");
@@ -194,25 +219,8 @@ void startupSound() {
 }
 
 void calibrateSystem() {
-  lcd.clear();
-  lcd.setCursor(2, 0);
-  lcd.print("Kalibrasi...");
-  
-  Serial.println("Kalibrasi dimulai.");
-
-  delay(1000);
-
-  lcd.clear();
-  lcd.setCursor(2, 0);
-  lcd.print("Kalibrasi");
-  lcd.setCursor(2, 1);
-  lcd.print("Selesai");
-
-  Serial.println("Kalibrasi selesai.");
-
-  delay(1000);
-
-  updateLCD();
+  calibrationRunning = true;
+  Serial.println("CMD:CALIBRATE");
 }
 
 void displayLocationInfo() {

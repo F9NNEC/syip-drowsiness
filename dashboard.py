@@ -9,11 +9,9 @@ from dotenv import load_dotenv
 from microcontroller import init_esp32, get_gps_data
 from inference import (
     gen_frames_stream,
-    calibration_requested,
     calibration_status,
     calibration_status_lock,
-    calib_buffer,
-    CALIB_FRAME_COUNT,
+    request_calibration,
     start_detection,
     cleanup
 )
@@ -511,8 +509,10 @@ def index():
             const recalibrateFill = document.getElementById('recalibrateFill');
             const recalibrateStatusText = document.getElementById('recalibrateStatusText');
             let pollTimer = null;
+            let completionTimer = null;
 
             function startRecalibrate() {
+                clearTimeout(completionTimer);
                 recalibrateBtn.disabled = true;
                 recalibrateBtn.textContent = 'Mengkalibrasi...';
                 recalibrateTrack.style.display = 'block';
@@ -523,7 +523,7 @@ def index():
                 fetch('/recalibrate', { method: 'POST' })
                     .then(res => res.json())
                     .then(() => {
-                        pollTimer = setInterval(pollCalibrationStatus, 400);
+                        startCalibrationPolling();
                     })
                     .catch(() => {
                         recalibrateStatusText.textContent = 'Gagal memulai kalibrasi. Coba lagi.';
@@ -531,10 +531,23 @@ def index():
                     });
             }
 
+            function startCalibrationPolling() {
+                if (pollTimer === null) {
+                    pollTimer = setInterval(pollCalibrationStatus, 400);
+                }
+                pollCalibrationStatus();
+            }
+
             function pollCalibrationStatus() {
                 fetch('/calibration_status')
                     .then(res => res.json())
                     .then(data => {
+                        if (data.state === 'idle') return;
+
+                        recalibrateBtn.disabled = true;
+                        recalibrateBtn.textContent = 'Mengkalibrasi...';
+                        recalibrateTrack.style.display = 'block';
+                        recalibrateStatusText.style.display = 'block';
                         const pct = Math.round((data.progress / data.total) * 100);
                         recalibrateFill.style.width = pct + '%';
                         recalibrateStatusText.textContent =
@@ -542,20 +555,27 @@ def index():
 
                         if (data.state === 'done') {
                             clearInterval(pollTimer);
+                            pollTimer = null;
                             recalibrateStatusText.textContent = 'Kalibrasi selesai!';
-                            setTimeout(() => {
+                            completionTimer = setTimeout(() => {
                                 recalibrateTrack.style.display = 'none';
                                 recalibrateStatusText.style.display = 'none';
                                 resetRecalibrateButton();
+                                completionTimer = null;
                             }, 1500);
                         }
                     })
                     .catch(() => {
-                        clearInterval(pollTimer);
-                        recalibrateStatusText.textContent = 'Gagal mengambil status kalibrasi.';
-                        resetRecalibrateButton();
+                        if (pollTimer !== null) {
+                            clearInterval(pollTimer);
+                            pollTimer = null;
+                            recalibrateStatusText.textContent = 'Gagal mengambil status kalibrasi.';
+                            resetRecalibrateButton();
+                        }
                     });
             }
+
+            startCalibrationPolling();
 
             function resetRecalibrateButton() {
                 recalibrateBtn.disabled = false;
@@ -610,20 +630,8 @@ def video_feed():
 @app.route('/recalibrate', methods=['POST'])
 @login_required
 def recalibrate():
-    if calibration_requested.is_set():
+    if not request_calibration():
         return {'status': 'already_running'}, 200
-
-    calib_buffer['ears'].clear()
-    calib_buffer['mars'].clear()
-    calib_buffer['pucs'].clear()
-    calib_buffer['moes'].clear()
-
-    with calibration_status_lock:
-        calibration_status['state'] = 'calibrating'
-        calibration_status['progress'] = 0
-        calibration_status['total'] = CALIB_FRAME_COUNT
-
-    calibration_requested.set()
     return {'status': 'started'}, 200
 
 

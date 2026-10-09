@@ -273,9 +273,27 @@ norm_lock = threading.Lock()
 current_norms = {'ears': None, 'mars': None, 'pucs': None, 'moes': None}
 
 calibration_requested = threading.Event()
+detection_paused = threading.Event()
 calibration_status_lock = threading.Lock()
 calibration_status = {'state': 'idle', 'progress': 0, 'total': CALIB_FRAME_COUNT}
 calib_buffer = {'ears': [], 'mars': [], 'pucs': [], 'moes': []}
+
+
+def request_calibration():
+    with calibration_status_lock:
+        if calibration_requested.is_set():
+            return False
+
+        calib_buffer['ears'].clear()
+        calib_buffer['mars'].clear()
+        calib_buffer['pucs'].clear()
+        calib_buffer['moes'].clear()
+        calibration_status['state'] = 'calibrating'
+        calibration_status['progress'] = 0
+        calibration_status['total'] = CALIB_FRAME_COUNT
+        calibration_requested.set()
+        return True
+
 
 def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     global latest_frame
@@ -296,18 +314,47 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     status = 'normal'
     last_sent_status = None
     last_away_time = None
+    calibration_active = False
     input_data = []
     frame_before_run = 0
 
     epsilon = 1e-5
 
     while cap.isOpened():
+        esp = get_esp32()
+        if esp:
+            for command in esp.read_commands():
+                if command == 'PAUSE':
+                    detection_paused.set()
+                    esp.send_alert()
+                    input_data.clear()
+                    frame_before_run = 0
+                    model_label = 0
+                    last_away_time = None
+                    last_sent_status = None
+                elif command == 'START':
+                    detection_paused.clear()
+                    input_data.clear()
+                    frame_before_run = 0
+                    model_label = 0
+                    last_away_time = None
+                    last_sent_status = None
+                elif command == 'CALIBRATE':
+                    request_calibration()
+
         success, image = cap.read()
         if not success:
             continue
 
         # KALIBRASI ULANG
         if calibration_requested.is_set():
+            if not calibration_active:
+                calibration_active = True
+                esp = get_esp32()
+                if esp:
+                    esp.send_alert()
+                last_sent_status = None
+
             ear_raw, mar_raw, puc_raw, moe_raw, calib_image, _ = run_face_mp(image)
 
             if ear_raw != -1000:
@@ -341,10 +388,15 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 calib_buffer['pucs'].clear()
                 calib_buffer['moes'].clear()
 
-                calibration_requested.clear()
                 with calibration_status_lock:
+                    calibration_requested.clear()
                     calibration_status['state'] = 'done'
                     calibration_status['progress'] = CALIB_FRAME_COUNT
+
+                calibration_active = False
+                esp = get_esp32()
+                if esp:
+                    esp.send(3)
 
                 ear_main = mar_main = puc_main = moe_main = 0
                 input_data = []
@@ -356,6 +408,16 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 with frame_lock:
                     latest_frame = buffer.tobytes()
             continue  # skip proses deteksi normal di bawah selama kalibrasi
+
+        if detection_paused.is_set():
+            cv2.putText(image, "DETECTION PAUSED",
+                        (int(0.05 * image.shape[1]), int(0.12 * image.shape[0])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            ret, buffer = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if ret:
+                with frame_lock:
+                    latest_frame = buffer.tobytes()
+            continue
 
         with norm_lock:
             ears_norm_local = current_norms['ears']
@@ -405,7 +467,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
         status, last_away_time = get_status_with_pose_grace(
             model_label, head_pose, last_away_time, time.monotonic()
         )
-        if status != last_sent_status:
+        if status != last_sent_status or status in ('danger', 'drowsy'):
             esp = get_esp32()
             if esp and esp.is_connected():
                 if status == 'danger':

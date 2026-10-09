@@ -2,6 +2,7 @@ import serial
 import logging
 import threading
 import json
+import queue
 from datetime import datetime
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,7 @@ class ESP32Connection:
         self.serial = None
         self.reader_thread = None
         self.running = False
+        self.commands = queue.Queue()
         self.connect()
 
     def connect(self):
@@ -77,6 +79,8 @@ class ESP32Connection:
                             pass
                     elif text.startswith('$'):
                         print(f"[{timestamp}] GPS: {text}")
+                    elif text in ('CMD:START', 'CMD:PAUSE', 'CMD:CALIBRATE'):
+                        self.commands.put(text[4:])
                     else:
                         print(f"[{timestamp}] ESP32: {text}")
                 else:
@@ -96,7 +100,7 @@ class ESP32Connection:
         Send signal to ESP32.
         
         Args:
-            signal: 0 (normal), 1 (drowsy), atau 2 (danger)
+            signal: 0 (normal), 1 (drowsy), 2 (danger), atau 3 (kalibrasi selesai)
         """
         if not self.is_connected():
             return False
@@ -119,6 +123,15 @@ class ESP32Connection:
     def send_alert(self):
         """Send alert signal (0)."""
         return self.send(0)
+
+    def read_commands(self):
+        """Return control commands received from ESP32."""
+        commands = []
+        while True:
+            try:
+                commands.append(self.commands.get_nowait())
+            except queue.Empty:
+                return commands
 
     def disconnect(self):
         """Disconnect from ESP32."""
@@ -157,4 +170,3 @@ def close_esp32():
     if _esp32:
         _esp32.disconnect()
         _esp32 = None
-
