@@ -79,6 +79,12 @@ class ESP32Connection:
                             pass
                     elif text.startswith('$'):
                         print(f"[{timestamp}] GPS: {text}")
+                    elif text == 'CMD:BOOT':
+                        logger.info("CMD:BOOT diterima; mengirim byte startup 0x04")
+                        if not self.send(4):
+                            logger.error("Gagal mengirim byte startup 0x04 ke ESP32")
+                    elif text == 'CMD:READY':
+                        print(f"[{timestamp}] ESP32: sistem dashboard siap")
                     elif text in ('CMD:START', 'CMD:PAUSE', 'CMD:CALIBRATE'):
                         self.commands.put(text[4:])
                     else:
@@ -152,7 +158,7 @@ class ESP32Connection:
 _esp32 = None
 
 
-def init_esp32(port='COM8'):
+def init_esp32(port='COM3'):
     """Initialize global ESP32 connection."""
     global _esp32
     _esp32 = ESP32Connection(port=port, baudrate=115200)

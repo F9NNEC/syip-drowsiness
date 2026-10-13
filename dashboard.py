@@ -3,7 +3,6 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from datetime import timedelta
 import os
-import threading
 from dotenv import load_dotenv
 
 from microcontroller import init_esp32, get_gps_data
@@ -650,10 +649,11 @@ def gps_data():
 
 
 if __name__ == '__main__':
+    # Buka serial lebih dulu agar CMD:BOOT tidak hilang saat kamera dikalibrasi.
+    init_esp32(port='COM3')
     start_detection()
 
     print('[INFO] Server Flask berjalan di http://127.0.0.1:5000')
-    threading.Timer(1.5, lambda: init_esp32(port='COM3')).start()
 
     try:
         app.run(host='0.0.0.0', port=5000, threaded=True)

@@ -410,6 +410,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
             continue  # skip proses deteksi normal di bawah selama kalibrasi
 
         if detection_paused.is_set():
+            image = cv2.flip(image, 1)
             cv2.putText(image, "DETECTION PAUSED",
                         (int(0.05 * image.shape[1]), int(0.12 * image.shape[0])),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -537,7 +538,7 @@ mp_drawing = mp.solutions.drawing_utils
 drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
 
 # ganti path
-model_lstm_path = r'models\clf_lstm_jit6.pth'
+model_lstm_path = r'models/clf_lstm_jit6.pth'
 model = torch.jit.load(model_lstm_path)
 model.eval()
 

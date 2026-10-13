@@ -20,9 +20,12 @@ const char* password = "11111111";
 
 unsigned long lastDisplayTime = 0;
 const unsigned long DISPLAY_INTERVAL = 2000;
+unsigned long lastBootMessage = 0;
+const unsigned long BOOT_RETRY_INTERVAL = 1000;
 
 bool paused = false;
 bool calibrationRunning = false;
+bool systemStarted = false;
 int alarmSignal = 0;
 int cursor = 0;
 int gpsPage = 0;
@@ -45,14 +48,19 @@ void setup() {
 
   updateLCD();
 
-  Serial.println("System Ready. Waiting for GPS fix and satellites...");
+  Serial.println("CMD:BOOT");
+  lastBootMessage = millis();
 }
 
 void loop() {
   while (Serial.available()) {
     int signal = Serial.read();
 
-    if (signal == 3 && calibrationRunning) {
+    if (signal == 4 && !systemStarted) {
+      systemStarted = true;
+      updateLCD();
+      Serial.println("CMD:READY");
+    } else if (signal == 3 && calibrationRunning) {
       calibrationRunning = false;
       lcd.clear();
       lcd.setCursor(2, 0);
@@ -71,6 +79,12 @@ void loop() {
       digitalWrite(BUZZER_PIN, LOW);
       alarmSignal = 0;
     }
+  }
+
+  // Ulangi handshake jika host terlambat membuka port atau CMD:BOOT pertama hilang.
+  if (!systemStarted && millis() - lastBootMessage >= BOOT_RETRY_INTERVAL) {
+    lastBootMessage = millis();
+    Serial.println("CMD:BOOT");
   }
 
   while (gpsSerial.available() > 0) {
@@ -151,6 +165,12 @@ void loop() {
 }
 
 void updateLCD() {
+  if (!systemStarted) {
+    lcd.setCursor(0, 0);
+    lcd.print("Menunggu Sistem ");
+    return;
+  }
+
   if (calibrationRunning) {
     lcd.setCursor(0, 0);
     lcd.print("Kalibrasi       ");
