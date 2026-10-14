@@ -7,7 +7,8 @@ import torch
 import platform
 import threading
 from dotenv import load_dotenv
-from microcontroller import get_esp32, close_esp32
+from microcontroller import get_esp32, get_gps_data, close_esp32
+from celeris_bot import send_detection_alert
 
 head_pose_baseline = None
 
@@ -339,6 +340,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     model_label = 0
     status = 'normal'
     last_sent_status = None
+    last_telegram_status = None
     last_away_time = None
     calibration_active = False
     input_data = []
@@ -358,6 +360,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                     model_label = 0
                     last_away_time = None
                     last_sent_status = None
+                    last_telegram_status = None
                 elif command == 'START':
                     detection_paused.clear()
                     input_data.clear()
@@ -365,6 +368,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                     model_label = 0
                     last_away_time = None
                     last_sent_status = None
+                    last_telegram_status = None
                 elif command == 'CALIBRATE':
                     request_calibration()
 
@@ -435,6 +439,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 model_label = 0
                 status = 'normal'
                 last_away_time = None
+                last_telegram_status = None
 
             ret, buffer = cv2.imencode('.jpg', calib_image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ret:
@@ -502,6 +507,11 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
         status, last_away_time = get_status_with_pose_grace(
             model_label, head_pose, last_away_time, time.monotonic()
         )
+        if status != last_telegram_status:
+            if status in ('danger', 'drowsy'):
+                send_detection_alert(status, get_gps_data())
+            last_telegram_status = status
+
         if status != last_sent_status or status in ('danger', 'drowsy'):
             esp = get_esp32()
             if esp and esp.is_connected():
