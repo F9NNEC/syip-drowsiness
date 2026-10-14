@@ -42,7 +42,7 @@ class ESP32Connection:
             self.reader_thread.start()
             logger.info(f"✓ ESP32 terhubung di port {self.port}")
             print(f"\n{'='*50}")
-            print(f"  📡 TERMINAL SERIAL MONITOR")
+            print(f"TERMINAL SERIAL MONITOR")
             print(f"{'='*50}\n")
         except Exception as e:
             logger.warning(f"✗ ESP32 tidak ditemukan di {self.port}. Error: {e}")

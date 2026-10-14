@@ -9,6 +9,8 @@ import threading
 from dotenv import load_dotenv
 from microcontroller import get_esp32, close_esp32
 
+head_pose_baseline = None
+
 load_dotenv()
 
 if platform.system() == 'Windows':
@@ -18,6 +20,18 @@ else:
 
 def distance(p1, p2):
     return (((p1[:2] - p2[:2]) ** 2).sum()) ** 0.5
+
+def mean_head_pose(poses):
+    angles = np.radians(np.asarray(poses, dtype=np.float64))
+    sine_mean = np.sin(angles).mean(axis=0)
+    cosine_mean = np.cos(angles).mean(axis=0)
+    return tuple(np.degrees(np.arctan2(sine_mean, cosine_mean)))
+
+def relative_head_pose(pose, baseline):
+    if pose is None or baseline is None:
+        return pose
+    return tuple((angle - neutral + 180.0) % 360.0 - 180.0
+                 for angle, neutral in zip(pose, baseline))
 
 def eye_aspect_ratio(landmarks, eye):
     N1 = distance(landmarks[eye[1][0]], landmarks[eye[1][1]])
@@ -86,6 +100,9 @@ def draw_head_pose(image, landmarks):
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
     angles = cv2.RQDecomp3x3(rotation_matrix)[0]
     pitch, yaw, roll = angles
+    display_pitch, display_yaw, display_roll = relative_head_pose(
+        (pitch, yaw, roll), head_pose_baseline
+    )
 
     axis_length = 120
     axis = np.float64([
@@ -110,7 +127,7 @@ def draw_head_pose(image, landmarks):
         cv2.putText(image, label, endpoint, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
     cv2.putText(
-        image, f'Yaw: {yaw:.1f}  Pitch: {pitch:.1f}  Roll: {roll:.1f}',
+        image, f'Yaw: {display_yaw:.1f}  Pitch: {display_pitch:.1f}  Roll: {display_roll:.1f}',
         (int(0.02 * width), int(0.94 * height)),
         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2
     )
@@ -170,19 +187,24 @@ def run_face_mp(image):
     return ear, mar, puc, moe, image, head_pose
 
 def collect_calibration_frames(cap, calib_frame_count=75):
+    global head_pose_baseline
     ears = []
     mars = []
     pucs = []
     moes = []
+    poses = []
 
-    print('\n[INFO] Menjalankan Kalibrasi... Pastikan wajah ada di depan kamera.')
+    print('\n[INFO] Kalibrasi... Hadapkan kepala lurus ke kamera.')
 
     while cap.isOpened():
         success, image = cap.read()
         if not success:
             continue
 
-        ear, mar, puc, moe, _, _ = run_face_mp(image)
+        ear, mar, puc, moe, _, pose = run_face_mp(image)
+        if pose is not None:
+            poses.append(pose)
+
         if ear != -1000:
             ears.append(ear)
             mars.append(mar)
@@ -200,6 +222,8 @@ def collect_calibration_frames(cap, calib_frame_count=75):
     mars = np.array(mars)
     pucs = np.array(pucs)
     moes = np.array(moes)
+    if poses:
+        head_pose_baseline = mean_head_pose(poses)
 
     return [ears.mean(), ears.std()], [mars.mean(), mars.std()], \
            [pucs.mean(), pucs.std()], [moes.mean(), moes.std()]
@@ -226,10 +250,10 @@ latest_frame = None
 frame_lock = threading.Lock()
 
 CALIB_FRAME_COUNT = 75
-HEAD_DOWN_PITCH_MIN = -167.0
-HEAD_DOWN_PITCH_MAX = -1.0
-HEAD_UP_PITCH_MIN = 1.0
-HEAD_UP_PITCH_MAX = 173.0
+HEAD_DOWN_PITCH_MIN = 10.0
+HEAD_DOWN_PITCH_MAX = 179.0
+HEAD_UP_PITCH_MIN = -179.0
+HEAD_UP_PITCH_MAX = -7.0
 HEAD_TURN_YAW_THRESHOLD = 15.0
 HEAD_TILT_ROLL_THRESHOLD = 15.0
 POSE_RETURN_GRACE_SECONDS = 1.0
@@ -276,7 +300,7 @@ calibration_requested = threading.Event()
 detection_paused = threading.Event()
 calibration_status_lock = threading.Lock()
 calibration_status = {'state': 'idle', 'progress': 0, 'total': CALIB_FRAME_COUNT}
-calib_buffer = {'ears': [], 'mars': [], 'pucs': [], 'moes': []}
+calib_buffer = {'ears': [], 'mars': [], 'pucs': [], 'moes': [], 'poses': []}
 
 
 def request_calibration():
@@ -288,6 +312,7 @@ def request_calibration():
         calib_buffer['mars'].clear()
         calib_buffer['pucs'].clear()
         calib_buffer['moes'].clear()
+        calib_buffer['poses'].clear()
         calibration_status['state'] = 'calibrating'
         calibration_status['progress'] = 0
         calibration_status['total'] = CALIB_FRAME_COUNT
@@ -297,6 +322,7 @@ def request_calibration():
 
 def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
     global latest_frame
+    global head_pose_baseline
 
     with norm_lock:
         current_norms['ears'] = ears_norm
@@ -355,7 +381,10 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                     esp.send_alert()
                 last_sent_status = None
 
-            ear_raw, mar_raw, puc_raw, moe_raw, calib_image, _ = run_face_mp(image)
+            ear_raw, mar_raw, puc_raw, moe_raw, calib_image, pose = run_face_mp(image)
+
+            if pose is not None:
+                calib_buffer['poses'].append(pose)
 
             if ear_raw != -1000:
                 calib_buffer['ears'].append(ear_raw)
@@ -376,6 +405,8 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 mars_arr = np.array(calib_buffer['mars'])
                 pucs_arr = np.array(calib_buffer['pucs'])
                 moes_arr = np.array(calib_buffer['moes'])
+                if calib_buffer['poses']:
+                    head_pose_baseline = mean_head_pose(calib_buffer['poses'])
 
                 with norm_lock:
                     current_norms['ears'] = [ears_arr.mean(), ears_arr.std()]
@@ -387,6 +418,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 calib_buffer['mars'].clear()
                 calib_buffer['pucs'].clear()
                 calib_buffer['moes'].clear()
+                calib_buffer['poses'].clear()
 
                 with calibration_status_lock:
                     calibration_requested.clear()
@@ -402,6 +434,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 input_data = []
                 model_label = 0
                 status = 'normal'
+                last_away_time = None
 
             ret, buffer = cv2.imencode('.jpg', calib_image, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ret:
@@ -426,7 +459,8 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
             pucs_norm_local = current_norms['pucs']
             moes_norm_local = current_norms['moes']
 
-        ear, mar, puc, moe, image, head_pose = run_face_mp(image)
+        ear, mar, puc, moe, image, raw_head_pose = run_face_mp(image)
+        head_pose = relative_head_pose(raw_head_pose, head_pose_baseline)
         if ear != -1000:
             ear = (ear - ears_norm_local[0]) / (ears_norm_local[1] + epsilon)
             mar = (mar - mars_norm_local[0]) / (mars_norm_local[1] + epsilon)
@@ -549,6 +583,7 @@ camera_cap = None
 def start_detection():
     """Buka kamera sekali, lalu langsung kalibrasi dan masuk loop deteksi."""
     global ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g, camera_cap
+    global head_pose_baseline
 
     if camera_cap is not None and camera_cap.isOpened():
         camera_cap.release()
@@ -558,6 +593,7 @@ def start_detection():
     camera_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
     camera_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
+    head_pose_baseline = None
     ears_norm_g, mars_norm_g, pucs_norm_g, moes_norm_g = collect_calibration_frames(camera_cap)
 
     capture_thread = threading.Thread(
