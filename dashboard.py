@@ -249,15 +249,21 @@ def index():
             }
             .video-container {
                 width: 100%;
-                aspect-ratio: 16 / 9; /* sesuai resolusi asli kamera: 640x360 */
+                aspect-ratio: 16 / 9;
                 border-radius: 20px;
-                background-color: #f0f0f0;
+                background-color: #000;
                 overflow: hidden;
+                display: flex;
+                align-items: center;
+                justify-content: center;
             }
             .video-container img {
-                width: 100%;
-                height: 100%;
-                object-fit: cover; /* aman, rasio kotak == rasio kamera, jadi tidak memotong */
+                display: block;
+                flex: 0 0 auto;
+                max-width: 100%;
+                max-height: 100%;
+                object-fit: contain;
+                object-position: center;
             }
 
             /* Tombol & progress kalibrasi ulang */

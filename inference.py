@@ -194,6 +194,7 @@ def collect_calibration_frames(cap, calib_frame_count=75):
     pucs = []
     moes = []
     poses = []
+    frame_size_logged = False
 
     print('\n[INFO] Kalibrasi... Hadapkan kepala lurus ke kamera.')
 
@@ -202,6 +203,12 @@ def collect_calibration_frames(cap, calib_frame_count=75):
         if not success:
             continue
 
+        if not frame_size_logged:
+            frame_height, frame_width = image.shape[:2]
+            print(f'[INFO] Resolusi frame kamera: {frame_width}x{frame_height}')
+            frame_size_logged = True
+
+        image = center_stream_frame(image)
         ear, mar, puc, moe, _, pose = run_face_mp(image)
         if pose is not None:
             poses.append(pose)
@@ -249,6 +256,43 @@ def get_classification(input_data):
 # tanpa masing-masing membuka kamera / memanggil face_mesh sendiri-sendiri.
 latest_frame = None
 frame_lock = threading.Lock()
+
+STREAM_FRAME_WIDTH = 640
+STREAM_FRAME_HEIGHT = 360
+
+
+def center_stream_frame(image):
+    frame_height, frame_width = image.shape[:2]
+    black_columns = np.mean(np.all(image <= 16, axis=2), axis=0) >= 0.98
+    left = 0
+    right = frame_width
+    while left < right and black_columns[left]:
+        left += 1
+    while right > left and black_columns[right - 1]:
+        right -= 1
+    if right > left and right - left >= frame_width // 2:
+        image = image[:, left:right]
+        frame_height, frame_width = image.shape[:2]
+
+    scale = min(
+        STREAM_FRAME_WIDTH / frame_width,
+        STREAM_FRAME_HEIGHT / frame_height
+    )
+    resized_width = max(1, round(frame_width * scale))
+    resized_height = max(1, round(frame_height * scale))
+    interpolation = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+    resized = cv2.resize(
+        image, (resized_width, resized_height), interpolation=interpolation
+    )
+
+    canvas = np.zeros(
+        (STREAM_FRAME_HEIGHT, STREAM_FRAME_WIDTH) + image.shape[2:],
+        dtype=image.dtype
+    )
+    left = (STREAM_FRAME_WIDTH - resized_width) // 2
+    top = (STREAM_FRAME_HEIGHT - resized_height) // 2
+    canvas[top:top + resized_height, left:left + resized_width] = resized
+    return canvas
 
 CALIB_FRAME_COUNT = 75
 HEAD_DOWN_PITCH_MIN = 10.0
@@ -383,6 +427,8 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
         success, image = cap.read()
         if not success:
             continue
+
+        image = center_stream_frame(image)
 
         # KALIBRASI ULANG
         if calibration_requested.is_set():
@@ -611,7 +657,7 @@ def start_detection():
         camera_cap.release()
 
     camera_cap = cv2.VideoCapture(0, backend)
-    camera_cap.set(cv2.CAP_PROP_BUFFERSIZE, 0)
+    camera_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     camera_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
     camera_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
