@@ -1,52 +1,81 @@
 #include <HardwareSerial.h>
 #include <TinyGPSPlus.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 #include <WiFi.h>
+#include <esp_now.h>
+
+struct SendData {
+  int32_t heartRate;  // BPM (0 = belum ada hasil)
+  int32_t spo2;       // SpO2 % (0 = belum ada hasil)
+  int32_t pause;      // 1 = Pause aktif, 0 = tidak (level, tetap 1 selama tombol toggle aktif)
+  int32_t calibrate;  // 1 selama ~1 detik setelah tombol Calibrate ditekan, lalu 0
+};
 
 #define BUZZER_PIN 23
 
-#define BUTTON_UP 25
-#define BUTTON_ENTER 26
-#define BUTTON_DOWN 27
+#define PRINT_MAC_AT_BOOT 0
 
 TinyGPSPlus gps;
 #define gpsSerial Serial2
 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-const char* ssid = "adit";
-const char* password = "11111111";
-
-unsigned long lastDisplayTime = 0;
-const unsigned long DISPLAY_INTERVAL = 2000;
 unsigned long lastBootMessage = 0;
 const unsigned long BOOT_RETRY_INTERVAL = 1000;
+const unsigned long HOST_TIMEOUT = 5000;
+const int HOST_HEARTBEAT_SIGNAL = 6;
+
+unsigned long lastDisplayTime = 0;
+const unsigned long DISPLAY_INTERVAL = 1000;  // sesuaikan dengan kodemu
 
 bool paused = false;
 bool calibrationRunning = false;
 bool systemStarted = false;
+unsigned long lastHostHeartbeat = 0;
 int alarmSignal = 0;
 int cursor = 0;
 int gpsPage = 0;
 int screenPage = 0;
 
+portMUX_TYPE espMux = portMUX_INITIALIZER_UNLOCKED;
+volatile bool vitalsBaru = false;     
+volatile int32_t watchBpm = 0;
+volatile int32_t watchSpo2 = 0;
+volatile int32_t watchPause = 0;       
+volatile bool calibrateRequest = false; 
+int32_t lastCalibrateRx = 0;         
+
+void onDataReceive(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  if (len != sizeof(SendData)) return;
+
+  SendData rx;
+  memcpy(&rx, data, sizeof(rx));
+
+  portENTER_CRITICAL(&espMux);
+  watchBpm = rx.heartRate;
+  watchSpo2 = rx.spo2;
+  watchPause = rx.pause;
+  if (rx.calibrate == 1 && lastCalibrateRx == 0) calibrateRequest = true;
+  lastCalibrateRx = rx.calibrate;
+  vitalsBaru = true;
+  portEXIT_CRITICAL(&espMux);
+}
+
 void setup() {
   Serial.begin(115200);
 
   pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(BUTTON_UP, INPUT_PULLUP);
-  pinMode(BUTTON_ENTER, INPUT_PULLUP);
-  pinMode(BUTTON_DOWN, INPUT_PULLUP);
 
   gpsSerial.begin(9600, SERIAL_8N1, 16, 17);
 
-  WiFi.begin(ssid, password);
-
-  lcd.init();
-  lcd.backlight();
-
-  updateLCD();
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+#if PRINT_MAC_AT_BOOT
+  Serial.print("MAC:");
+  Serial.println(WiFi.macAddress());
+#endif
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(onDataReceive);
+  } else {
+    Serial.println("ESPNOW: init gagal");
+  }
 
   Serial.println("CMD:BOOT");
   lastBootMessage = millis();
@@ -56,20 +85,24 @@ void loop() {
   while (Serial.available()) {
     int signal = Serial.read();
 
-    if (signal == 4 && !systemStarted) {
+    if (signal == 5) {
+      Serial.println("CMD:RESTARTING");
+      delay(100);
+      ESP.restart();
+    } else if (signal == 4) {
       systemStarted = true;
-      updateLCD();
+      paused = false;
+      calibrationRunning = false;
+      alarmSignal = 0;
+      screenPage = 0;
+      cursor = 0;
+      lastHostHeartbeat = millis();
       Serial.println("CMD:READY");
+    } else if (signal == HOST_HEARTBEAT_SIGNAL && systemStarted) {
+      lastHostHeartbeat = millis();
     } else if (signal == 3 && calibrationRunning) {
       calibrationRunning = false;
-      lcd.clear();
-      lcd.setCursor(2, 0);
-      lcd.print("Kalibrasi");
-      lcd.setCursor(2, 1);
-      lcd.print("Selesai");
-      delay(1000);
-      updateLCD();
-    } else if (signal == 1 || signal == 2) {
+    } else if (systemStarted && (signal == 1 || signal == 2)) {
       if (signal != alarmSignal) {
         tone(BUZZER_PIN, signal == 1 ? 2000 : 2500);
         alarmSignal = signal;
@@ -81,7 +114,18 @@ void loop() {
     }
   }
 
-  // Ulangi handshake jika host terlambat membuka port atau CMD:BOOT pertama hilang.
+  if (systemStarted && millis() - lastHostHeartbeat >= HOST_TIMEOUT) {
+    systemStarted = false;
+    paused = true;
+    calibrationRunning = false;
+    screenPage = 0;
+    cursor = 0;
+    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
+    alarmSignal = 0;
+    Serial.println("CMD:HOST_TIMEOUT");
+  }
+
   if (!systemStarted && millis() - lastBootMessage >= BOOT_RETRY_INTERVAL) {
     lastBootMessage = millis();
     Serial.println("CMD:BOOT");
@@ -91,51 +135,8 @@ void loop() {
     gps.encode(gpsSerial.read());
   }
 
-  if (digitalRead(BUTTON_UP) == LOW) {
-    if (screenPage == 1) {
-      screenPage = 0;
-      cursor = 0;
-    } else {
-      cursor = 0;
-    }
-
-    updateLCD();
-    delay(200);
-  }
-
-  if (digitalRead(BUTTON_DOWN) == LOW) {
-    if (screenPage == 0 && cursor == 0) {
-      cursor = 1;
-    } else if (screenPage == 0 && cursor == 1) {
-      screenPage = 1;
-      cursor = 0;
-    } else {
-      screenPage = 0;
-      cursor = 0;
-    }
-
-    updateLCD();
-    delay(200);
-  }
-
-  if (digitalRead(BUTTON_ENTER) == LOW) {
-    if (screenPage == 0 && cursor == 0) {
-      paused = !paused;
-
-      if (paused) {
-        beepPause();
-      } else {
-        startupSound();
-      }
-
-      Serial.println(paused ? "CMD:PAUSE" : "CMD:START");
-      updateLCD();
-    } else if (screenPage == 0 && cursor == 1) {
-      calibrateSystem();
-    }
-
-    delay(200);
-  }
+  // Data dari smartwatch: Pause, Calibrate, BPM, SpO2
+  espNowLayani();
 
   if (millis() - lastDisplayTime >= DISPLAY_INTERVAL) {
     lastDisplayTime = millis();
@@ -147,8 +148,6 @@ void loop() {
         gpsPage = 0;
       }
     }
-
-    updateLCD();
 
     if (gps.location.isValid()) {
       displayLocationInfo();
@@ -164,59 +163,44 @@ void loop() {
   }
 }
 
-void updateLCD() {
-  if (!systemStarted) {
-    lcd.setCursor(0, 0);
-    lcd.print("Menunggu Sistem ");
-    return;
-  }
+void espNowLayani() {
+  int32_t bpm, spo2, pauseReq;
+  bool baru, kalibrasi;
 
-  if (calibrationRunning) {
-    lcd.setCursor(0, 0);
-    lcd.print("Kalibrasi       ");
-    lcd.setCursor(0, 1);
-    lcd.print("Mohon tunggu... ");
-    return;
-  }
+  portENTER_CRITICAL(&espMux);
+  baru = vitalsBaru;
+  vitalsBaru = false;
+  kalibrasi = calibrateRequest;
+  calibrateRequest = false;
+  bpm = watchBpm;
+  spo2 = watchSpo2;
+  pauseReq = watchPause;
+  portEXIT_CRITICAL(&espMux);
 
-  if (screenPage == 0) {
-    lcd.setCursor(0, 0);
-    lcd.print(cursor == 0 ? "> " : "  ");
-    lcd.print(paused ? "START" : "PAUSE");
-    lcd.print("         ");
+  if (baru) kirimVitals(bpm, spo2);
 
-    lcd.setCursor(0, 1);
-    lcd.print(cursor == 1 ? "> " : "  ");
-    lcd.print("KALIBRASI");
-    lcd.print("       ");
-  } else {
-    lcd.setCursor(0, 0);
+  if (systemStarted) {
+    bool mintaPause = (pauseReq == 1);
+    if (mintaPause != paused) {
+      paused = mintaPause;
 
-    if (gps.location.isValid()) {
-      if (gpsPage == 0) {
-        lcd.print("LAT:");
-        lcd.print(gps.location.lat(), 4);
-      } else if (gpsPage == 1) {
-        lcd.print("LNG:");
-        lcd.print(gps.location.lng(), 4);
+      if (paused) {
+        beepPause();
       } else {
-        lcd.print("SPD:");
-        lcd.print(gps.speed.kmph(), 1);
-        lcd.print(" km/h");
+        startupSound();
       }
-    } else {
-      lcd.print("GPS Searching");
+
+      Serial.println(paused ? "CMD:PAUSE" : "CMD:START");
     }
 
-    lcd.print("   ");
-
-    lcd.setCursor(0, 1);
-    lcd.print("WIFI ");
-    lcd.print(WiFi.status() == WL_CONNECTED
-              ? "Connected"
-              : "Disconnected");
-    lcd.print("  ");
+    if (kalibrasi) {
+      calibrateSystem();
+    }
   }
+}
+
+void kirimVitals(int32_t bpm, int32_t spo2) {
+  Serial.printf("{\"bpm\": %ld, \"spo2\": %ld}\n", (long)bpm, (long)spo2);
 }
 
 void beepPause() {

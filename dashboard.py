@@ -5,7 +5,7 @@ from datetime import timedelta
 import os
 from dotenv import load_dotenv
 
-from microcontroller import init_esp32, get_gps_data
+from microcontroller import init_esp32, get_esp32, get_gps_data, get_vitals_data
 from inference import (
     gen_frames_stream,
     calibration_status,
@@ -309,6 +309,32 @@ def index():
                 text-align: center;
                 display: none;
             }
+            .restart-btn {
+                width: 100%;
+                padding: 10px;
+                margin-top: 8px;
+                border: 1px solid #f1caca;
+                border-radius: 12px;
+                background-color: #fff;
+                color: #b42318;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+            }
+            .restart-btn:hover {
+                background-color: #fff5f5;
+            }
+            .restart-btn:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
+            .restart-status-text {
+                min-height: 14px;
+                font-size: 11px;
+                color: #888;
+                margin-top: 6px;
+                text-align: center;
+            }
 
             /* Heart Rate Section */
             .heart-card {
@@ -372,7 +398,7 @@ def index():
                 color: #333;
                 margin-top: 2px;
             }
-
+            
             /* Location Section */
             .location-section {
                 position: relative;
@@ -443,14 +469,15 @@ def index():
                         <div class="recalibrate-progress-fill" id="recalibrateFill"></div>
                     </div>
                     <div class="recalibrate-status-text" id="recalibrateStatusText"></div>
-                </div>
-            </div>
-
-            <div class="heart-card">
+                    <button class="restart-btn" id="restartEspBtn" type="button" onclick="restartESP32()">
+                        Reset / Boot ESP32
+                    </button>
+                    <div class="restart-status-text" id="restartEspStatus" role="status" aria-live="polite"></div>
+                    <div class="heart-card">
                 <div class="heart-info">
                     <div class="heart-label">Heart</div>
                     <div class="heart-value-container">
-                        <span class="heart-value">72</span>
+                        <span class="heart-value" id="heartRateValue">--</span>
                         <span class="heart-unit">bpm</span>
                     </div>
                 </div>
@@ -581,10 +608,33 @@ def index():
                 recalibrateBtn.textContent = 'Kalibrasi Ulang';
             }
 
+            async function restartESP32() {
+                if (!window.confirm('ESP32 akan di-restart. Lanjutkan?')) return;
+
+                const button = document.getElementById('restartEspBtn');
+                const status = document.getElementById('restartEspStatus');
+                button.disabled = true;
+                status.textContent = 'Mengirim perintah restart...';
+
+                try {
+                    const response = await fetch('/esp32/restart', { method: 'POST' });
+                    const result = await response.json();
+                    if (!response.ok) {
+                        throw new Error(result.error || 'Perintah restart gagal.');
+                    }
+                    status.textContent = 'Perintah terkirim. ESP32 sedang boot ulang.';
+                    setTimeout(() => { button.disabled = false; }, 5000);
+                } catch (error) {
+                    status.textContent = error.message || 'Gagal menghubungi ESP32.';
+                    button.disabled = false;
+                }
+            }
+
             // --- GPS Map ---
             const map = L.map('map', { zoomControl: false }).setView([-2.885477, 104.715871], 14);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; OpenStreetMap contributors'
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                attribution: 'Tiles &copy; Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+                maxZoom: 19
             }).addTo(map);
 
             let marker = L.marker([-2.885477, 104.715871]).addTo(map);
@@ -611,8 +661,21 @@ def index():
                 }
             }
 
+            async function fetchVitals() {
+                try {
+                    const res = await fetch('/vitals_data');
+                    const data = await res.json();
+                    const heartRate = document.getElementById('heartRateValue');
+                    heartRate.textContent = data.bpm > 0 ? data.bpm : '--';
+                } catch (err) {
+                    console.log('Heart rate belum tersedia');
+                }
+            }
+
             setInterval(fetchGps, 1000);
             fetchGps();
+            setInterval(fetchVitals, 1000);
+            fetchVitals();
         </script>
     </body>
 </html>
@@ -634,6 +697,17 @@ def recalibrate():
     return {'status': 'started'}, 200
 
 
+@app.route('/esp32/restart', methods=['POST'])
+@login_required
+def restart_esp32():
+    esp = get_esp32()
+    if esp is None or not esp.is_connected():
+        return {'error': 'ESP32 tidak terhubung.'}, 503
+    if not esp.restart():
+        return {'error': 'Gagal mengirim perintah restart ke ESP32.'}, 500
+    return {'status': 'restart_requested'}, 200
+
+
 @app.route('/calibration_status')
 @login_required
 def calibration_status_route():
@@ -646,6 +720,12 @@ def calibration_status_route():
 @login_required
 def gps_data():
     return get_gps_data()
+
+
+@app.route('/vitals_data')
+@login_required
+def vitals_data():
+    return get_vitals_data()
 
 
 if __name__ == '__main__':

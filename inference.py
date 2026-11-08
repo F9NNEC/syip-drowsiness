@@ -294,6 +294,14 @@ def get_status_with_pose_grace(model_label, head_pose, last_away_time, current_t
 
     return get_detection_status(model_label, head_pose), None
 
+def is_pose_returning(head_pose, last_away_time, current_time):
+    return (
+        head_pose is not None
+        and not is_looking_away(head_pose)
+        and last_away_time is not None
+        and current_time - last_away_time < POSE_RETURN_GRACE_SECONDS
+    )
+
 norm_lock = threading.Lock()
 current_norms = {'ears': None, 'mars': None, 'pucs': None, 'moes': None}
 
@@ -488,12 +496,16 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
             puc_main = -1000
             moe_main = -1000
 
+        current_time = time.monotonic()
         pose_away = is_looking_away(head_pose)
         pose_lost_after_away = head_pose is None and last_away_time is not None
-        if pose_away or pose_lost_after_away:
+        pose_returning = is_pose_returning(head_pose, last_away_time, current_time)
+        if pose_away or pose_lost_after_away or pose_returning:
             input_data.clear()
             frame_before_run = 0
             model_label = 0
+            if pose_away or pose_lost_after_away:
+                ear_main = mar_main = puc_main = moe_main = -1000
         else:
             if len(input_data) == 20:
                 input_data.pop(0)
@@ -505,7 +517,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
                 model_label = get_classification(input_data)
 
         status, last_away_time = get_status_with_pose_grace(
-            model_label, head_pose, last_away_time, time.monotonic()
+            model_label, head_pose, last_away_time, current_time
         )
         if status != last_telegram_status:
             if status in ('danger', 'drowsy'):
