@@ -189,6 +189,7 @@ def run_face_mp(image):
 
 def collect_calibration_frames(cap, calib_frame_count=75):
     global head_pose_baseline
+    global stream_crop_bounds
     ears = []
     mars = []
     pucs = []
@@ -206,9 +207,14 @@ def collect_calibration_frames(cap, calib_frame_count=75):
         if not frame_size_logged:
             frame_height, frame_width = image.shape[:2]
             print(f'[INFO] Resolusi frame kamera: {frame_width}x{frame_height}')
+            stream_crop_bounds = detect_stream_crop_bounds(image)
+            print(
+                f'[INFO] Batas crop stream: {stream_crop_bounds[0]}..'
+                f'{stream_crop_bounds[1]} dari {frame_width} kolom'
+            )
             frame_size_logged = True
 
-        image = center_stream_frame(image)
+        image = center_stream_frame(image, stream_crop_bounds)
         ear, mar, puc, moe, _, pose = run_face_mp(image)
         if pose is not None:
             poses.append(pose)
@@ -259,9 +265,10 @@ frame_lock = threading.Lock()
 
 STREAM_FRAME_WIDTH = 640
 STREAM_FRAME_HEIGHT = 360
+stream_crop_bounds = None
 
 
-def center_stream_frame(image):
+def detect_stream_crop_bounds(image):
     frame_height, frame_width = image.shape[:2]
     black_columns = np.mean(np.all(image <= 16, axis=2), axis=0) >= 0.98
     left = 0
@@ -271,7 +278,15 @@ def center_stream_frame(image):
     while right > left and black_columns[right - 1]:
         right -= 1
     if right > left and right - left >= frame_width // 2:
-        image = image[:, left:right]
+        return left, right
+    return 0, frame_width
+
+
+def center_stream_frame(image, crop_bounds):
+    frame_height, frame_width = image.shape[:2]
+    crop_left, crop_right = crop_bounds
+    if 0 <= crop_left < crop_right <= frame_width:
+        image = image[:, crop_left:crop_right]
         frame_height, frame_width = image.shape[:2]
 
     scale = min(
@@ -428,7 +443,7 @@ def capture_loop(cap, ears_norm, mars_norm, pucs_norm, moes_norm):
         if not success:
             continue
 
-        image = center_stream_frame(image)
+        image = center_stream_frame(image, stream_crop_bounds)
 
         # KALIBRASI ULANG
         if calibration_requested.is_set():
